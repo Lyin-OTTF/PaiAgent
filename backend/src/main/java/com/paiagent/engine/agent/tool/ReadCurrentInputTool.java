@@ -2,6 +2,8 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
 import org.springframework.stereotype.Component;
 
 import java.util.LinkedHashMap;
@@ -11,6 +13,7 @@ import java.util.Map;
  * Lets the agent inspect the input currently passed to the node.
  */
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class ReadCurrentInputTool implements AgentTool {
 
     @Override

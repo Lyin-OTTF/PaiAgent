@@ -1,5 +1,6 @@
 package com.paiagent.engine.executor.impl;
 
+import com.paiagent.engine.memory.MemoryWriteRequest;
 import com.paiagent.engine.model.WorkflowNode;
 import com.paiagent.service.AgentMemoryService;
 import com.paiagent.service.AgentPlanConfigResolver;
@@ -38,15 +39,35 @@ public class MemoryWriteNodeExecutor extends AbstractAgentPlanNodeExecutor {
             embedding = agentPlanClient.createEmbedding(config, content);
         }
 
-        return memoryService.write(
-                content,
-                stringData(node, "memoryType", "fact"),
-                stringData(node, "scope", "workflow"),
-                memoryService.splitTags(stringData(node, "tags", "")),
-                node.getId(),
-                embedding,
-                config.model()
-        );
+        return memoryService.write(MemoryWriteRequest.builder()
+                .content(content)
+                .memoryType(stringData(node, "memoryType", "fact"))
+                .scope(stringData(node, "scope", "workflow"))
+                .tags(memoryService.splitTags(stringData(node, "tags", "")))
+                .source(node.getId())
+                .embedding(embedding)
+                .embeddingModel(config.model())
+                .sessionId(stringData(node, "sessionId", null))
+                .userId(stringData(node, "userId", null))
+                .tenantId(stringData(node, "tenantId", null))
+                .importance(importanceOf(node))
+                .build());
+    }
+
+    private Double importanceOf(WorkflowNode node) {
+        Object value = node.getData().get("importance");
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        String text = asText(value);
+        if (text == null) {
+            return null;
+        }
+        try {
+            return Double.parseDouble(text);
+        } catch (NumberFormatException e) {
+            return null;
+        }
     }
 
     @Override

@@ -12,6 +12,7 @@ import com.paiagent.dto.ResumeExecutionRequest;
 import com.paiagent.engine.EngineSelector;
 import com.paiagent.engine.WorkflowExecutor;
 import com.paiagent.engine.WorkflowEngine;
+import com.paiagent.engine.langgraph.LangGraphWorkflowEngine;
 import com.paiagent.entity.ExecutionRecord;
 import com.paiagent.entity.ExecutionSnapshot;
 import com.paiagent.entity.ExecutionVariable;
@@ -153,11 +154,16 @@ public class ExecutionController {
 
         try {
             WorkflowExecutor executor = engineSelector.selectEngine(workflow);
-            if (!(executor instanceof WorkflowEngine workflowEngine)) {
-                return Result.error("当前执行引擎暂不支持断点续执行");
+            // DAG 引擎基于节点快照续跑；LangGraph 引擎基于 Checkpoint 续跑
+            if (executor instanceof WorkflowEngine workflowEngine) {
+                ExecutionResponse response = workflowEngine.resumeExecution(workflow, executionId, request, null);
+                return Result.success(response);
             }
-            ExecutionResponse response = workflowEngine.resumeExecution(workflow, executionId, request, null);
-            return Result.success(response);
+            if (executor instanceof LangGraphWorkflowEngine langGraphEngine) {
+                ExecutionResponse response = langGraphEngine.resumeExecution(workflow, executionId, request, null);
+                return Result.success(response);
+            }
+            return Result.error("当前执行引擎暂不支持断点续执行");
         } catch (Exception e) {
             log.error("断点续执行失败", e);
             return Result.error("断点续执行失败: " + e.getMessage());

@@ -93,6 +93,14 @@ public class NodeAdapter {
                 
                 return CompletableFuture.completedFuture(newStateData);
                 
+            } catch (com.paiagent.engine.langgraph.loop.LoopLimitExceededException e) {
+                // 循环超限属于结构性失败：不能按普通节点失败处理后继续路由，
+                // 否则会在环里空转到全局迭代上限。直接向上传播，让图立即终止。
+                log.error("循环节点超限，终止图执行: {}", node.getId(), e);
+                if (eventCallback != null) {
+                    eventCallback.accept(ExecutionEvent.nodeError(node.getId(), node.getType(), e.getMessage()));
+                }
+                throw e;
             } catch (Exception e) {
                 log.error("节点执行失败: {}", node.getId(), e);
                 

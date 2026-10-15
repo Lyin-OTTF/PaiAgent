@@ -2,6 +2,8 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
 import org.springframework.stereotype.Component;
 
 import java.net.URI;
@@ -13,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class WebFetchTool implements AgentTool {
 
     private static final int MAX_PAGE_CHARS = 8000;

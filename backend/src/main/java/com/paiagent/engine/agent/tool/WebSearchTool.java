@@ -2,6 +2,8 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
 import com.paiagent.entity.McpToolConfig;
 import com.paiagent.service.McpToolConfigService;
 import com.paiagent.service.SearchInfinityMcpClient;
@@ -11,6 +13,7 @@ import java.util.LinkedHashMap;
 import java.util.Map;
 
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class WebSearchTool implements AgentTool {
 
     private final SearchInfinityMcpClient searchInfinityMcpClient;

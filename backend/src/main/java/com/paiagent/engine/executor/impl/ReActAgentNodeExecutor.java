@@ -7,6 +7,11 @@ import com.paiagent.dto.ExecutionEvent;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
 import com.paiagent.engine.agent.AgentToolRegistry;
+import com.paiagent.engine.agent.gateway.GatewayStatus;
+import com.paiagent.engine.agent.gateway.ToolGateway;
+import com.paiagent.engine.agent.gateway.ToolGatewayResult;
+import com.paiagent.engine.agent.gateway.ToolExecutionContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
 import com.paiagent.engine.llm.LLMNodeConfig;
 import com.paiagent.engine.model.WorkflowNode;
 import com.paiagent.engine.skill.Skill;
@@ -40,6 +45,9 @@ public class ReActAgentNodeExecutor extends AbstractLLMNodeExecutor {
 
     @Autowired
     private AgentToolRegistry toolRegistry;
+
+    @Autowired
+    private ToolGateway toolGateway;
 
     @Override
     protected String getNodeType() {
@@ -80,6 +88,7 @@ public class ReActAgentNodeExecutor extends AbstractLLMNodeExecutor {
         List<Map<String, Object>> trace = new ArrayList<>();
         TokenUsage tokenUsage = new TokenUsage();
         AgentToolContext toolContext = new AgentToolContext(node, input);
+        ToolExecutionContext execCtx = buildExecutionContext(node, input);
 
         for (int step = 1; step <= maxSteps; step++) {
             String userPrompt = buildStepPrompt(goalPrompt, input, trace, step, maxSteps);
@@ -116,7 +125,27 @@ public class ReActAgentNodeExecutor extends AbstractLLMNodeExecutor {
             Map<String, Object> toolInput = decision.toolInput();
             Map<String, Object> observation;
             try {
-                observation = tool.execute(toolInput, toolContext);
+                ToolGatewayResult gatewayResult = toolGateway.execute(tool, toolInput, execCtx, toolContext);
+                if (gatewayResult.status() == GatewayStatus.EXECUTED) {
+                    observation = gatewayResult.output();
+                } else if (gatewayResult.status() == GatewayStatus.DENIED) {
+                    observation = new LinkedHashMap<>();
+                    observation.put("error", gatewayResult.message());
+                    observation.put("gateway", "DENIED");
+                    observation.put("recoverable", false);
+                } else {
+                    // PENDING_APPROVAL：工具需人工审批，本轮无法继续执行，直接以待审批状态收尾
+                    Map<String, Object> pending = new LinkedHashMap<>();
+                    pending.put("status", "PENDING_APPROVAL");
+                    pending.put("approvalId", gatewayResult.approvalId());
+                    pending.put("message", gatewayResult.message());
+                    traceItem.put("toolName", toolName);
+                    traceItem.put("observation", pending);
+                    trace.add(traceItem);
+                    emitProgress(node, progressCallback, "ReAct 工具需人工审批: " + toolName, traceItem);
+                    return buildOutput("工具调用需要人工审批（审批单 #" + gatewayResult.approvalId() + "）："
+                            + gatewayResult.message(), trace, tokenUsage, false, "approval_required");
+                }
             } catch (Exception toolError) {
                 log.warn("ReAct 工具调用失败: node={}, tool={}, error={}", node.getId(), toolName, toolError.getMessage());
                 observation = new LinkedHashMap<>();
@@ -325,6 +354,47 @@ public class ReActAgentNodeExecutor extends AbstractLLMNodeExecutor {
 
     private boolean hasText(Object value) {
         return value != null && !String.valueOf(value).trim().isEmpty();
+    }
+
+    /**
+     * 构造工具治理执行上下文。
+     * 运行时允许的最高自治等级来自节点配置 autonomyLevel（缺省 EXECUTE，保证既有工作流行为不变）；
+     * executionId / workflowId / tenantId 优先取自 input 中由上游工作流引擎注入的字段，缺失时降级为空/全局。
+     */
+    private ToolExecutionContext buildExecutionContext(WorkflowNode node, Map<String, Object> input) {
+        String nodeId = node.getId();
+        String tenantId = asString(input.get("tenantId"), "global");
+        AutonomyLevel allowedLevel = resolveAllowedLevel(node.getData());
+        String caller = "react_agent";
+        Long executionId = asLong(input.get("executionId"));
+        Long workflowId = asLong(input.get("workflowId"));
+        return new ToolExecutionContext(tenantId, allowedLevel, caller, executionId, workflowId, nodeId);
+    }
+
+    private AutonomyLevel resolveAllowedLevel(Map<String, Object> data) {
+        Object raw = data == null ? null : data.get("autonomyLevel");
+        if (raw != null && !String.valueOf(raw).isBlank()) {
+            return AutonomyLevel.fromName(raw.toString());
+        }
+        return AutonomyLevel.EXECUTE;
+    }
+
+    private String asString(Object value, String defaultValue) {
+        return value == null ? defaultValue : String.valueOf(value);
+    }
+
+    private Long asLong(Object value) {
+        if (value == null) {
+            return null;
+        }
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        try {
+            return Long.parseLong(value.toString().trim());
+        } catch (NumberFormatException ignored) {
+            return null;
+        }
     }
 
     private void validateConfig(LLMNodeConfig config) {

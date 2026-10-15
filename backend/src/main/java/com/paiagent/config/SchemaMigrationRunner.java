@@ -99,6 +99,11 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                     INDEX idx_knowledge_document_id (document_id)
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库片段表'
                 """);
+        // 迭代3：knowledge_chunk.content 的 FULLTEXT(ngram) 索引，BM25 词法召回路依赖。
+        // 老库建表时无此索引，需幂等补建；DDL 失败（如 MariaDB 无 ngram parser）只记日志不阻断启动，
+        // 检索侧自动降级为「仅向量路 / 旧全表扫描」。
+        addFulltextIndexIfMissing("knowledge_chunk", "ft_knowledge_chunk_content",
+                "ALTER TABLE knowledge_chunk ADD FULLTEXT INDEX ft_knowledge_chunk_content (content) WITH PARSER ngram");
         createTableIfMissing("mcp_tool_config", """
                 CREATE TABLE mcp_tool_config (
                     id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT 'MCP 工具配置 ID',
@@ -175,6 +180,87 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 "ALTER TABLE knowledge_chunk ADD COLUMN status VARCHAR(30) DEFAULT 'READY' COMMENT '状态' AFTER embedding");
         addColumnIfMissing("knowledge_chunk", "char_count",
                 "ALTER TABLE knowledge_chunk ADD COLUMN char_count INT DEFAULT 0 COMMENT '字符数' AFTER status");
+
+        createTableIfMissing("action_ledger", """
+                CREATE TABLE action_ledger (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '审计主键 ID',
+                    execution_id BIGINT DEFAULT NULL COMMENT '执行记录 ID',
+                    workflow_id BIGINT DEFAULT NULL COMMENT '工作流 ID',
+                    node_id VARCHAR(100) DEFAULT NULL COMMENT '节点 ID',
+                    tool_name VARCHAR(100) NOT NULL COMMENT '工具名',
+                    caller VARCHAR(255) DEFAULT NULL COMMENT '调用方标识',
+                    tenant_id VARCHAR(100) DEFAULT NULL COMMENT '租户 ID',
+                    input_summary TEXT COMMENT '入参摘要',
+                    autonomy_level VARCHAR(30) DEFAULT NULL COMMENT '工具所需自治等级',
+                    write_flag TINYINT DEFAULT 0 COMMENT '是否写操作(0/1)',
+                    action_status VARCHAR(30) NOT NULL COMMENT '动作状态(EXECUTED/DENIED/PENDING_APPROVAL/APPROVED)',
+                    result_summary TEXT COMMENT '结果摘要',
+                    error_message TEXT COMMENT '错误信息',
+                    approval_id BIGINT DEFAULT NULL COMMENT '关联审批记录 ID',
+                    idempotency_key VARCHAR(255) DEFAULT NULL COMMENT '幂等键',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    INDEX idx_action_ledger_tool (tool_name),
+                    INDEX idx_action_ledger_status (action_status),
+                    INDEX idx_action_ledger_approval (approval_id),
+                    INDEX idx_action_ledger_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='工具调用审计表'
+                """);
+
+        createTableIfMissing("approval_record", """
+                CREATE TABLE approval_record (
+                    id BIGINT AUTO_INCREMENT PRIMARY KEY COMMENT '审批主键 ID',
+                    execution_id BIGINT DEFAULT NULL COMMENT '执行记录 ID',
+                    workflow_id BIGINT DEFAULT NULL COMMENT '工作流 ID',
+                    node_id VARCHAR(100) DEFAULT NULL COMMENT '节点 ID',
+                    tool_name VARCHAR(100) NOT NULL COMMENT '工具名',
+                    caller VARCHAR(255) DEFAULT NULL COMMENT '调用方标识',
+                    tenant_id VARCHAR(100) DEFAULT NULL COMMENT '租户 ID',
+                    input_summary TEXT COMMENT '入参摘要',
+                    requested_level VARCHAR(30) DEFAULT NULL COMMENT '请求的自治等级',
+                    status VARCHAR(30) NOT NULL COMMENT '审批状态(PENDING/APPROVED/REJECTED)',
+                    approver VARCHAR(255) DEFAULT NULL COMMENT '审批人',
+                    decision_note TEXT COMMENT '审批意见',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    decided_at TIMESTAMP NULL COMMENT '决策时间',
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+                    INDEX idx_approval_status (status),
+                    INDEX idx_approval_tool (tool_name),
+                    INDEX idx_approval_created (created_at)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='人工审批记录表'
+                """);
+
+        // 迭代2：扩展 agent_memory 表，支持分层记忆（WORKING/SESSION/USER/TEAM）+ TTL + 脱敏来源
+        addColumnIfMissing("agent_memory", "session_id",
+                "ALTER TABLE agent_memory ADD COLUMN session_id VARCHAR(100) DEFAULT NULL COMMENT '会话 ID（SESSION/WORKING 层）' AFTER source");
+        addColumnIfMissing("agent_memory", "user_id",
+                "ALTER TABLE agent_memory ADD COLUMN user_id VARCHAR(100) DEFAULT NULL COMMENT '用户 ID（USER 层）' AFTER session_id");
+        addColumnIfMissing("agent_memory", "tenant_id",
+                "ALTER TABLE agent_memory ADD COLUMN tenant_id VARCHAR(100) DEFAULT NULL COMMENT '租户 ID（TEAM 层）' AFTER user_id");
+        addColumnIfMissing("agent_memory", "importance",
+                "ALTER TABLE agent_memory ADD COLUMN importance DOUBLE DEFAULT 0.5 COMMENT '重要性权重（用于检索排序）' AFTER tenant_id");
+        addColumnIfMissing("agent_memory", "expires_at",
+                "ALTER TABLE agent_memory ADD COLUMN expires_at TIMESTAMP NULL COMMENT '过期时间（TTL 清理，NULL 表示不过期）' AFTER importance");
+        addColumnIfMissing("agent_memory", "embedding_model",
+                "ALTER TABLE agent_memory ADD COLUMN embedding_model VARCHAR(100) DEFAULT NULL COMMENT '向量模型' AFTER expires_at");
+
+        // 迭代5：LangGraph 检查点表，支撑 LangGraph 引擎的断点恢复
+        createTableIfMissing("langgraph_checkpoint", """
+                CREATE TABLE langgraph_checkpoint (
+                    id VARCHAR(64) NOT NULL PRIMARY KEY COMMENT '检查点 ID（langgraph4j 生成的 UUID）',
+                    thread_id VARCHAR(128) NOT NULL COMMENT '线程 ID（= 执行记录 ID）',
+                    node_id VARCHAR(128) DEFAULT NULL COMMENT '刚执行完的节点 ID',
+                    next_node_id VARCHAR(128) DEFAULT NULL COMMENT '下一个待执行节点 ID',
+                    state_json MEDIUMTEXT COMMENT '图状态 JSON',
+                    seq BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增序号，标识检查点写入顺序（恢复时取最大）',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+                    UNIQUE KEY uk_langgraph_checkpoint_seq (seq),
+                    INDEX idx_langgraph_checkpoint_thread (thread_id)
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='LangGraph 检查点表'
+                """);
+        // 迭代5补丁：检查点 ID 是随机 UUID，按 ID 排序无法定位最新写入，补一个自增序号列
+        addColumnIfMissing("langgraph_checkpoint", "seq",
+                "ALTER TABLE langgraph_checkpoint ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增序号，标识检查点写入顺序', ADD UNIQUE KEY uk_langgraph_checkpoint_seq (seq)");
     }
 
     private void createTableIfMissing(String tableName, String ddl) {
@@ -204,5 +290,28 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         }
         jdbcTemplate.execute(ddl);
         log.info("Schema migrated: added {}.{}", tableName, columnName);
+    }
+
+    /**
+     * 幂等补建索引：information_schema.STATISTICS 命中即跳过。
+     * DDL 异常只告警不抛出——索引是检索优化而非正确性依赖，环境不支持时检索自动降级。
+     */
+    private void addFulltextIndexIfMissing(String tableName, String indexName, String ddl) {
+        try {
+            Integer count = jdbcTemplate.queryForObject("""
+                    SELECT COUNT(*)
+                    FROM information_schema.STATISTICS
+                    WHERE TABLE_SCHEMA = DATABASE()
+                      AND TABLE_NAME = ?
+                      AND INDEX_NAME = ?
+                    """, Integer.class, tableName, indexName);
+            if (count != null && count > 0) {
+                return;
+            }
+            jdbcTemplate.execute(ddl);
+            log.info("Schema migrated: created fulltext index {} on {}", indexName, tableName);
+        } catch (Exception e) {
+            log.warn("Schema migrate skipped (fulltext index {} on {}): {}", indexName, tableName, e.getMessage());
+        }
     }
 }

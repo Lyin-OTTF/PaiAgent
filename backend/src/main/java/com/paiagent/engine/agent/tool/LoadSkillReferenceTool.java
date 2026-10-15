@@ -2,6 +2,8 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
 import com.paiagent.engine.skill.SkillRegistry;
 import org.springframework.stereotype.Component;
 
@@ -12,6 +14,7 @@ import java.util.Map;
  * Loads one reference document from a registered Skill.
  */
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class LoadSkillReferenceTool implements AgentTool {
 
     private final SkillRegistry skillRegistry;

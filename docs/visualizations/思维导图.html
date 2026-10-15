@@ -1,0 +1,663 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PaiAgent 代码思维导图</title>
+  <style>
+    :root {
+      --accent: #23435f;
+      --accent-soft: color-mix(in srgb, #23435f 12%, white);
+      --ink: #17232d;
+      --muted: #60717e;
+      --page: #f3f6f7;
+      --panel: #ffffff;
+      --line: #d7e0e4;
+      --amber: #b96e20;
+      --amber-soft: #faeee1;
+      --green: #47785a;
+      --green-soft: #e8f2eb;
+      --red: #a94a4a;
+      --red-soft: #f7eaea;
+      --radius: 8px;
+      --shadow: 0 10px 30px rgba(24, 44, 57, 0.08);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(rgba(35, 67, 95, 0.035) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(35, 67, 95, 0.035) 1px, transparent 1px),
+        var(--page);
+      background-size: 30px 30px;
+      font-family: "Microsoft YaHei", "PingFang SC", "Noto Sans CJK SC", Arial, sans-serif;
+      line-height: 1.55;
+      overflow-x: hidden;
+    }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    h1, h2, h3, p { margin-top: 0; }
+    .page {
+      width: min(1800px, calc(100% - 28px));
+      margin: 0 auto;
+      padding: 18px 0 40px;
+    }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 20px;
+      align-items: end;
+      border: 1px solid var(--line);
+      border-top: 6px solid var(--accent);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      padding: 22px 24px;
+    }
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--accent);
+      font-size: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 24px;
+      height: 2px;
+      background: var(--accent);
+    }
+    h1 {
+      margin: 8px 0 8px;
+      font-size: clamp(28px, 4vw, 46px);
+      line-height: 1.14;
+      letter-spacing: 0;
+    }
+    .subtitle {
+      max-width: 900px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+    .source-note {
+      border-left: 3px solid var(--accent);
+      padding-left: 12px;
+      color: var(--muted);
+      font-size: 12px;
+      max-width: 360px;
+    }
+    .stats {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 10px;
+      margin: 14px 0;
+    }
+    .stat {
+      min-height: 88px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: rgba(255,255,255,.95);
+      padding: 13px;
+    }
+    .stat strong {
+      display: block;
+      color: var(--accent);
+      font-size: 24px;
+      line-height: 1.2;
+    }
+    .stat span {
+      display: block;
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 330px;
+      gap: 14px;
+      align-items: start;
+    }
+    .map-panel, .detail-panel {
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .map-panel { min-width: 0; }
+    .toolbar {
+      position: sticky;
+      top: 8px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: rgba(255,255,255,.97);
+      padding: 10px;
+      backdrop-filter: blur(10px);
+    }
+    .search {
+      flex: 1 1 280px;
+      min-width: 220px;
+      height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 0 11px;
+      outline: none;
+    }
+    .search:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 13%, transparent);
+    }
+    .tool-btn, .type-chip {
+      min-height: 38px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      padding: 0 11px;
+    }
+    .tool-btn:hover, .type-chip:hover { border-color: var(--accent); color: var(--accent); }
+    .result-count {
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+    .type-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      border-bottom: 1px solid var(--line);
+      padding: 9px 10px;
+    }
+    .type-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 28px;
+      padding: 2px 8px;
+      font-size: 11px;
+    }
+    .type-chip.is-active {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+      color: var(--accent);
+      font-weight: 700;
+    }
+    .type-chip strong { font-size: 11px; }
+    .tree-scroll {
+      max-height: calc(100vh - 290px);
+      overflow: auto;
+      padding: 14px 16px 28px;
+    }
+    .tree, .tree ul {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+    .tree ul {
+      margin-left: 16px;
+      padding-left: 14px;
+      border-left: 1px solid #dce4e7;
+    }
+    .tree li {
+      position: relative;
+      margin: 3px 0;
+    }
+    .tree li::before {
+      content: "";
+      position: absolute;
+      top: 17px;
+      left: -14px;
+      width: 12px;
+      border-top: 1px solid #dce4e7;
+    }
+    .tree > li::before { display: none; }
+    .tree li.collapsed > ul { display: none; }
+    .tree li.filtered-out { display: none; }
+    .node-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      min-width: 0;
+      border: 1px solid transparent;
+      border-radius: 5px;
+      padding: 2px 5px;
+      transition: background 120ms ease, border-color 120ms ease;
+    }
+    .node-row:hover {
+      border-color: #dbe4e7;
+      background: #f8fafb;
+    }
+    .node-row.is-selected {
+      border-color: var(--accent);
+      background: var(--accent-soft);
+    }
+    .toggle {
+      flex: 0 0 22px;
+      width: 22px;
+      height: 22px;
+      margin-top: 1px;
+      border: 1px solid #d8e1e4;
+      border-radius: 4px;
+      background: #fff;
+      color: var(--muted);
+      line-height: 1;
+      padding: 0;
+      font-size: 13px;
+    }
+    .toggle.placeholder {
+      visibility: hidden;
+      pointer-events: none;
+    }
+    .node-label {
+      min-width: 0;
+      border: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      padding: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .node-label:hover { color: var(--accent); }
+    .node-meta {
+      color: var(--muted);
+      font-size: 11px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      min-height: 20px;
+      border-radius: 999px;
+      padding: 1px 7px;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .t-root { color: #fff; background: var(--accent); }
+    .t-module { color: var(--accent); background: var(--accent-soft); }
+    .t-package { color: #516771; background: #edf2f4; }
+    .t-class, .t-controller { color: #285b89; background: #e7f0f8; }
+    .t-interface { color: #8a5b18; background: var(--amber-soft); }
+    .t-enum, .t-record, .t-annotation { color: #80516b; background: #f3eaf0; }
+    .t-endpoint { color: #25664f; background: var(--green-soft); }
+    .t-page, .t-component, .t-layout { color: #6c4d8d; background: #f0eaf6; }
+    .t-frontend-api, .t-api { color: #2b6a70; background: #e5f2f1; }
+    .t-table { color: #8a4d34; background: #f8ece6; }
+    .t-test { color: #944343; background: var(--red-soft); }
+    .t-file, .t-config, .t-mapper-xml, .t-resource { color: #536772; background: #edf2f4; }
+    .detail-panel {
+      position: sticky;
+      top: 8px;
+      overflow: hidden;
+    }
+    .detail-head {
+      border-bottom: 1px solid var(--line);
+      padding: 16px;
+    }
+    .detail-head h2 {
+      margin-bottom: 5px;
+      font-size: 18px;
+      overflow-wrap: anywhere;
+    }
+    .detail-body {
+      display: grid;
+      gap: 10px;
+      padding: 16px;
+    }
+    .detail-item {
+      border-bottom: 1px solid #edf1f2;
+      padding-bottom: 9px;
+    }
+    .detail-item span {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      font-weight: 700;
+    }
+    .detail-item strong {
+      display: block;
+      margin-top: 2px;
+      font-size: 13px;
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+    .empty-detail { color: var(--muted); font-size: 13px; }
+    .footer {
+      margin-top: 14px;
+      color: var(--muted);
+      text-align: center;
+      font-size: 11px;
+    }
+    @media (max-width: 1180px) {
+      .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .workspace { grid-template-columns: 1fr; }
+      .detail-panel { position: static; }
+      .tree-scroll { max-height: 68vh; }
+    }
+    @media (max-width: 720px) {
+      .page { width: min(1800px, calc(100% - 16px)); padding-top: 8px; }
+      .hero { grid-template-columns: 1fr; padding: 16px; }
+      .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      h1 { font-size: 28px; }
+      .toolbar { position: static; }
+      .tree-scroll { max-height: 64vh; padding-left: 10px; padding-right: 10px; }
+      .node-meta { display: none; }
+      .toggle { flex-basis: 20px; width: 20px; height: 20px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .page { width: 100%; padding: 0; }
+      .toolbar, .type-strip, .detail-panel { display: none !important; }
+      .workspace { display: block; }
+      .map-panel { box-shadow: none; }
+      .tree-scroll { max-height: none; overflow: visible; }
+      .tree li.filtered-out { display: block; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div>
+        <span class="eyebrow">PaiAgent / Code Mind Map</span>
+        <h1>PaiAgent 代码思维导图</h1>
+        <p class="subtitle">覆盖 Backend 控制器、Service、双引擎、Executor、Agent Tool、DTO、Entity、Mapper、Frontend 页面/组件/API、Skill、SQL 和测试。</p>
+      </div>
+      <div class="source-note">
+        节点由源码生成：类/接口按包展开，Controller 方法展开为 HTTP 接口，前端文件保留目录层级，
+        SQL 文件展开为数据表。使用搜索和类型筛选可快速定位。
+      </div>
+    </section>
+
+    <section class="stats">
+      <div class="stat"><strong>409</strong><span>思维导图节点</span></div>
+      <div class="stat"><strong>146</strong><span>类</span></div>
+      <div class="stat"><strong>40</strong><span>接口</span></div>
+      <div class="stat"><strong>43</strong><span>HTTP 接口</span></div>
+      <div class="stat"><strong>5</strong><span>前端页面</span></div>
+      <div class="stat"><strong>13</strong><span>数据表</span></div>
+    </section>
+
+    <section class="workspace">
+      <div class="map-panel">
+        <div class="toolbar">
+          <input id="search" class="search" type="search" placeholder="搜索类名、接口路径、页面、数据表或包名">
+          <button class="tool-btn" id="expand-all" type="button">展开全部</button>
+          <button class="tool-btn" id="expand-two" type="button">展开两层</button>
+          <button class="tool-btn" id="collapse-all" type="button">收起全部</button>
+          <button class="tool-btn" id="clear-filter" type="button">清除筛选</button>
+          <button class="tool-btn" id="print" type="button">打印 / 导出 PDF</button>
+          <span class="result-count" id="result-count"></span>
+        </div>
+        <div class="type-strip" id="type-strip">
+          <button class="type-chip is-active" data-type="all"><span>全部</span><strong>409</strong></button>
+          <button class="type-chip" data-type="class"><span>类</span><strong>146</strong></button><button class="type-chip" data-type="frontend-api"><span>前端 API</span><strong>46</strong></button><button class="type-chip" data-type="package"><span>包</span><strong>44</strong></button><button class="type-chip" data-type="endpoint"><span>HTTP 接口</span><strong>43</strong></button><button class="type-chip" data-type="interface"><span>接口</span><strong>40</strong></button><button class="type-chip" data-type="table"><span>数据表</span><strong>13</strong></button><button class="type-chip" data-type="module"><span>模块</span><strong>12</strong></button><button class="type-chip" data-type="record"><span>记录</span><strong>10</strong></button><button class="type-chip" data-type="file"><span>文件</span><strong>10</strong></button><button class="type-chip" data-type="doc"><span>文档</span><strong>10</strong></button><button class="type-chip" data-type="route"><span>路由入口</span><strong>7</strong></button><button class="type-chip" data-type="component"><span>组件</span><strong>6</strong></button><button class="type-chip" data-type="page"><span>页面</span><strong>5</strong></button><button class="type-chip" data-type="util"><span>工具</span><strong>4</strong></button><button class="type-chip" data-type="config"><span>配置</span><strong>4</strong></button><button class="type-chip" data-type="store"><span>状态</span><strong>3</strong></button><button class="type-chip" data-type="skill"><span>Skill</span><strong>3</strong></button><button class="type-chip" data-type="mapper-xml"><span>Mapper XML</span><strong>2</strong></button><button class="type-chip" data-type="root"><span>根节点</span><strong>1</strong></button>
+        </div>
+        <div class="tree-scroll">
+          <ul class="tree" id="tree"></ul>
+        </div>
+      </div>
+
+      <aside class="detail-panel">
+        <div class="detail-head">
+          <h2 id="detail-title">选择节点查看详情</h2>
+          <span class="badge t-root" id="detail-type">根节点</span>
+        </div>
+        <div class="detail-body" id="detail-body">
+          <p class="empty-detail">点击左侧任意节点，可查看节点类型、源码路径、包名、注解、直属子节点数量等信息。</p>
+        </div>
+      </aside>
+    </section>
+
+    <p class="footer">Generated from current source tree on 2026-09-17.</p>
+  </main>
+
+  <script>
+    const treeData = {"type":"root","label":"PaiAgent 代码思维导图","meta":"按 Backend、Frontend、接口、执行器、资源、Skill 和测试展开","children":[{"type":"module","label":"Backend 主代码","meta":"123 个 Java 源文件","children":[{"type":"package","label":"com.paiagent","meta":"1 个类型","children":[{"type":"class","label":"PaiAgentApplication","meta":"com.paiagent | backend/src/main/java/com/paiagent/PaiAgentApplication.java","children":[],"path":"backend/src/main/java/com/paiagent/PaiAgentApplication.java","packageName":"com.paiagent","annotations":[]}]},{"type":"package","label":"com.paiagent.common","meta":"1 个类型","children":[{"type":"class","label":"Result","meta":"com.paiagent.common | backend/src/main/java/com/paiagent/common/Result.java","children":[],"path":"backend/src/main/java/com/paiagent/common/Result.java","packageName":"com.paiagent.common","annotations":[]}]},{"type":"package","label":"com.paiagent.config","meta":"7 个类型","children":[{"type":"class","label":"ConfigValidationRunner","meta":"com.paiagent.config | 注解 @Component | backend/src/main/java/com/paiagent/config/ConfigValidationRunner.java","children":[],"path":"backend/src/main/java/com/paiagent/config/ConfigValidationRunner.java","packageName":"com.paiagent.config","annotations":["Component"]},{"type":"class","label":"JwtSecretProvider","meta":"com.paiagent.config | 注解 @Component | backend/src/main/java/com/paiagent/config/JwtSecretProvider.java","children":[],"path":"backend/src/main/java/com/paiagent/config/JwtSecretProvider.java","packageName":"com.paiagent.config","annotations":["Component"]},{"type":"class","label":"MinioConfig","meta":"com.paiagent.config | 注解 @Configuration, @ConfigurationProperties | backend/src/main/java/com/paiagent/config/MinioConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/config/MinioConfig.java","packageName":"com.paiagent.config","annotations":["Configuration","ConfigurationProperties"]},{"type":"class","label":"MyMetaObjectHandler","meta":"com.paiagent.config | 注解 @Component | backend/src/main/java/com/paiagent/config/MyMetaObjectHandler.java","children":[],"path":"backend/src/main/java/com/paiagent/config/MyMetaObjectHandler.java","packageName":"com.paiagent.config","annotations":["Component"]},{"type":"class","label":"SchemaMigrationRunner","meta":"com.paiagent.config | 注解 @Component | backend/src/main/java/com/paiagent/config/SchemaMigrationRunner.java","children":[],"path":"backend/src/main/java/com/paiagent/config/SchemaMigrationRunner.java","packageName":"com.paiagent.config","annotations":["Component"]},{"type":"class","label":"StaticResourceConfig","meta":"com.paiagent.config | 注解 @Configuration | backend/src/main/java/com/paiagent/config/StaticResourceConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/config/StaticResourceConfig.java","packageName":"com.paiagent.config","annotations":["Configuration"]},{"type":"class","label":"WebConfig","meta":"com.paiagent.config | 注解 @Configuration | backend/src/main/java/com/paiagent/config/WebConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/config/WebConfig.java","packageName":"com.paiagent.config","annotations":["Configuration"]}]},{"type":"package","label":"com.paiagent.dto","meta":"19 个类型","children":[{"type":"class","label":"AgentPlanWebSearchMcpRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/AgentPlanWebSearchMcpRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/AgentPlanWebSearchMcpRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionComparisonResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java","children":[{"type":"class","label":"NodeComparison","meta":"内部类型，来源 backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java"},{"type":"class","label":"DiffSummary","meta":"内部类型，来源 backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java"}],"path":"backend/src/main/java/com/paiagent/dto/ExecutionComparisonResponse.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionEvent","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionEvent.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionEvent.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionResponse.java","children":[{"type":"class","label":"NodeResult","meta":"内部类型，来源 backend/src/main/java/com/paiagent/dto/ExecutionResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionResponse.java"}],"path":"backend/src/main/java/com/paiagent/dto/ExecutionResponse.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionSnapshotResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionSnapshotResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionSnapshotResponse.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ExecutionVariableResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ExecutionVariableResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ExecutionVariableResponse.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"KnowledgeBaseRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/KnowledgeBaseRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/KnowledgeBaseRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"KnowledgePreviewRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/KnowledgePreviewRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/KnowledgePreviewRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"KnowledgeSearchRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/KnowledgeSearchRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/KnowledgeSearchRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"KnowledgeTextImportRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/KnowledgeTextImportRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/KnowledgeTextImportRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"LoginRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/LoginRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/LoginRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"LoginResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/LoginResponse.java","children":[{"type":"class","label":"UserInfo","meta":"内部类型，来源 backend/src/main/java/com/paiagent/dto/LoginResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/LoginResponse.java"}],"path":"backend/src/main/java/com/paiagent/dto/LoginResponse.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"McpToolConfigRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/McpToolConfigRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/McpToolConfigRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"McpToolTestRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/McpToolTestRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/McpToolTestRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"RefreshTokenRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/RefreshTokenRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/RefreshTokenRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"ResumeExecutionRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/ResumeExecutionRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/ResumeExecutionRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"WorkflowRequest","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/WorkflowRequest.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/WorkflowRequest.java","packageName":"com.paiagent.dto","annotations":[]},{"type":"class","label":"WorkflowResponse","meta":"com.paiagent.dto | backend/src/main/java/com/paiagent/dto/WorkflowResponse.java","children":[],"path":"backend/src/main/java/com/paiagent/dto/WorkflowResponse.java","packageName":"com.paiagent.dto","annotations":[]}]},{"type":"package","label":"com.paiagent.engine","meta":"4 个类型","children":[{"type":"class","label":"EngineSelector","meta":"com.paiagent.engine | 注解 @Component | backend/src/main/java/com/paiagent/engine/EngineSelector.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/EngineSelector.java","packageName":"com.paiagent.engine","annotations":["Component"]},{"type":"class","label":"WorkflowConfigParser","meta":"com.paiagent.engine | 注解 @Component | backend/src/main/java/com/paiagent/engine/WorkflowConfigParser.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/WorkflowConfigParser.java","packageName":"com.paiagent.engine","annotations":["Component"]},{"type":"class","label":"WorkflowEngine","meta":"com.paiagent.engine | 注解 @Service | backend/src/main/java/com/paiagent/engine/WorkflowEngine.java","children":[{"type":"class","label":"EdgeIndexes","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/WorkflowEngine.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/WorkflowEngine.java"},{"type":"class","label":"ResumeState","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/WorkflowEngine.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/WorkflowEngine.java"}],"path":"backend/src/main/java/com/paiagent/engine/WorkflowEngine.java","packageName":"com.paiagent.engine","annotations":["Service"]},{"type":"interface","label":"WorkflowExecutor","meta":"com.paiagent.engine | backend/src/main/java/com/paiagent/engine/WorkflowExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/WorkflowExecutor.java","packageName":"com.paiagent.engine","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.agent","meta":"3 个类型","children":[{"type":"interface","label":"AgentTool","meta":"com.paiagent.engine.agent | backend/src/main/java/com/paiagent/engine/agent/AgentTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/AgentTool.java","packageName":"com.paiagent.engine.agent","annotations":[]},{"type":"record","label":"AgentToolContext","meta":"com.paiagent.engine.agent | backend/src/main/java/com/paiagent/engine/agent/AgentToolContext.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/AgentToolContext.java","packageName":"com.paiagent.engine.agent","annotations":[]},{"type":"class","label":"AgentToolRegistry","meta":"com.paiagent.engine.agent | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/AgentToolRegistry.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/AgentToolRegistry.java","packageName":"com.paiagent.engine.agent","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.agent.tool","meta":"8 个类型","children":[{"type":"class","label":"KnowledgeRetrieveTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/KnowledgeRetrieveTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/KnowledgeRetrieveTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"LoadSkillDetailTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/LoadSkillDetailTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/LoadSkillDetailTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"LoadSkillReferenceTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/LoadSkillReferenceTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/LoadSkillReferenceTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"MemoryRetrieveTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/MemoryRetrieveTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/MemoryRetrieveTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"MemoryWriteTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/MemoryWriteTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/MemoryWriteTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"ReadCurrentInputTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/ReadCurrentInputTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/ReadCurrentInputTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"WebFetchTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/WebFetchTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/WebFetchTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]},{"type":"class","label":"WebSearchTool","meta":"com.paiagent.engine.agent.tool | 注解 @Component | backend/src/main/java/com/paiagent/engine/agent/tool/WebSearchTool.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/agent/tool/WebSearchTool.java","packageName":"com.paiagent.engine.agent.tool","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.dag","meta":"1 个类型","children":[{"type":"class","label":"DAGParser","meta":"com.paiagent.engine.dag | 注解 @Component | backend/src/main/java/com/paiagent/engine/dag/DAGParser.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/dag/DAGParser.java","packageName":"com.paiagent.engine.dag","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.executor","meta":"2 个类型","children":[{"type":"interface","label":"NodeExecutor","meta":"com.paiagent.engine.executor | backend/src/main/java/com/paiagent/engine/executor/NodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/NodeExecutor.java","packageName":"com.paiagent.engine.executor","annotations":[]},{"type":"class","label":"NodeExecutorFactory","meta":"com.paiagent.engine.executor | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/NodeExecutorFactory.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/NodeExecutorFactory.java","packageName":"com.paiagent.engine.executor","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.executor.impl","meta":"23 个类型","children":[{"type":"class","label":"AbstractAgentPlanNodeExecutor","meta":"com.paiagent.engine.executor.impl | backend/src/main/java/com/paiagent/engine/executor/impl/AbstractAgentPlanNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/AbstractAgentPlanNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":[]},{"type":"class","label":"AbstractLLMNodeExecutor","meta":"com.paiagent.engine.executor.impl | backend/src/main/java/com/paiagent/engine/executor/impl/AbstractLLMNodeExecutor.java","children":[{"type":"class","label":"LLMResponse","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/executor/impl/AbstractLLMNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/AbstractLLMNodeExecutor.java"}],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/AbstractLLMNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":[]},{"type":"class","label":"AIPingNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/AIPingNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/AIPingNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"ConditionNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/ConditionNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ConditionNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"DeepSeekNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/DeepSeekNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/DeepSeekNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"ImageGenerateNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/ImageGenerateNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ImageGenerateNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"InputNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/InputNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/InputNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"KnowledgeRetrieveNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/KnowledgeRetrieveNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/KnowledgeRetrieveNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"KnowledgeUpsertNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/KnowledgeUpsertNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/KnowledgeUpsertNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"LlmNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/LlmNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/LlmNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"MemoryRetrieveNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/MemoryRetrieveNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/MemoryRetrieveNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"MemoryWriteNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/MemoryWriteNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/MemoryWriteNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"OpenAINodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/OpenAINodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/OpenAINodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"OutputNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/OutputNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/OutputNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"QwenNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/QwenNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/QwenNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"ReActAgentNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java","children":[{"type":"record","label":"AgentDecision","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java"},{"type":"class","label":"TokenUsage","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java"}],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ReActAgentNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"StepNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/StepNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/StepNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"TTSNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/TTSNodeExecutor.java","children":[{"type":"record","label":"TtsRuntimeConfig","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/executor/impl/TTSNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/TTSNodeExecutor.java"}],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/TTSNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"VideoGenerateNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"VisionAnalyzeNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/VisionAnalyzeNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/VisionAnalyzeNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"WebFetchNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/WebFetchNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/WebFetchNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"WebSearchNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/WebSearchNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/WebSearchNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]},{"type":"class","label":"ZhiPuNodeExecutor","meta":"com.paiagent.engine.executor.impl | 注解 @Component | backend/src/main/java/com/paiagent/engine/executor/impl/ZhiPuNodeExecutor.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/executor/impl/ZhiPuNodeExecutor.java","packageName":"com.paiagent.engine.executor.impl","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.langgraph","meta":"2 个类型","children":[{"type":"class","label":"LangGraphWorkflowEngine","meta":"com.paiagent.engine.langgraph | 注解 @Service | backend/src/main/java/com/paiagent/engine/langgraph/LangGraphWorkflowEngine.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/langgraph/LangGraphWorkflowEngine.java","packageName":"com.paiagent.engine.langgraph","annotations":["Service"]},{"type":"class","label":"WorkflowState","meta":"com.paiagent.engine.langgraph | backend/src/main/java/com/paiagent/engine/langgraph/WorkflowState.java","children":[{"type":"class","label":"NodeOutput","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/langgraph/WorkflowState.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/langgraph/WorkflowState.java"}],"path":"backend/src/main/java/com/paiagent/engine/langgraph/WorkflowState.java","packageName":"com.paiagent.engine.langgraph","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.langgraph.adapter","meta":"1 个类型","children":[{"type":"class","label":"NodeAdapter","meta":"com.paiagent.engine.langgraph.adapter | 注解 @Component | backend/src/main/java/com/paiagent/engine/langgraph/adapter/NodeAdapter.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/langgraph/adapter/NodeAdapter.java","packageName":"com.paiagent.engine.langgraph.adapter","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.langgraph.builder","meta":"1 个类型","children":[{"type":"class","label":"GraphBuilder","meta":"com.paiagent.engine.langgraph.builder | 注解 @Component | backend/src/main/java/com/paiagent/engine/langgraph/builder/GraphBuilder.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/langgraph/builder/GraphBuilder.java","packageName":"com.paiagent.engine.langgraph.builder","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.langgraph.state","meta":"1 个类型","children":[{"type":"class","label":"StateManager","meta":"com.paiagent.engine.langgraph.state | 注解 @Component | backend/src/main/java/com/paiagent/engine/langgraph/state/StateManager.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/langgraph/state/StateManager.java","packageName":"com.paiagent.engine.langgraph.state","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.engine.llm","meta":"3 个类型","children":[{"type":"class","label":"ChatClientFactory","meta":"com.paiagent.engine.llm | 注解 @Component | backend/src/main/java/com/paiagent/engine/llm/ChatClientFactory.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/llm/ChatClientFactory.java","packageName":"com.paiagent.engine.llm","annotations":["Component"]},{"type":"class","label":"LLMNodeConfig","meta":"com.paiagent.engine.llm | backend/src/main/java/com/paiagent/engine/llm/LLMNodeConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/llm/LLMNodeConfig.java","packageName":"com.paiagent.engine.llm","annotations":[]},{"type":"class","label":"PromptTemplateService","meta":"com.paiagent.engine.llm | 注解 @Service | backend/src/main/java/com/paiagent/engine/llm/PromptTemplateService.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/llm/PromptTemplateService.java","packageName":"com.paiagent.engine.llm","annotations":["Service"]}]},{"type":"package","label":"com.paiagent.engine.model","meta":"3 个类型","children":[{"type":"class","label":"WorkflowConfig","meta":"com.paiagent.engine.model | backend/src/main/java/com/paiagent/engine/model/WorkflowConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/model/WorkflowConfig.java","packageName":"com.paiagent.engine.model","annotations":[]},{"type":"class","label":"WorkflowEdge","meta":"com.paiagent.engine.model | backend/src/main/java/com/paiagent/engine/model/WorkflowEdge.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/model/WorkflowEdge.java","packageName":"com.paiagent.engine.model","annotations":[]},{"type":"class","label":"WorkflowNode","meta":"com.paiagent.engine.model | backend/src/main/java/com/paiagent/engine/model/WorkflowNode.java","children":[{"type":"class","label":"Position","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/model/WorkflowNode.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/model/WorkflowNode.java"}],"path":"backend/src/main/java/com/paiagent/engine/model/WorkflowNode.java","packageName":"com.paiagent.engine.model","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.skill","meta":"5 个类型","children":[{"type":"class","label":"LoadSkillDetailFunction","meta":"com.paiagent.engine.skill | backend/src/main/java/com/paiagent/engine/skill/LoadSkillDetailFunction.java","children":[{"type":"record","label":"Input","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/skill/LoadSkillDetailFunction.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/LoadSkillDetailFunction.java"}],"path":"backend/src/main/java/com/paiagent/engine/skill/LoadSkillDetailFunction.java","packageName":"com.paiagent.engine.skill","annotations":[]},{"type":"class","label":"LoadSkillReferenceFunction","meta":"com.paiagent.engine.skill | backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java","children":[{"type":"record","label":"InputParams","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java"},{"type":"record","label":"Input","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java"}],"path":"backend/src/main/java/com/paiagent/engine/skill/LoadSkillReferenceFunction.java","packageName":"com.paiagent.engine.skill","annotations":[]},{"type":"class","label":"Skill","meta":"com.paiagent.engine.skill | backend/src/main/java/com/paiagent/engine/skill/Skill.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/Skill.java","packageName":"com.paiagent.engine.skill","annotations":[]},{"type":"class","label":"SkillLoader","meta":"com.paiagent.engine.skill | 注解 @Component | backend/src/main/java/com/paiagent/engine/skill/SkillLoader.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/SkillLoader.java","packageName":"com.paiagent.engine.skill","annotations":["Component"]},{"type":"class","label":"SkillRegistry","meta":"com.paiagent.engine.skill | 注解 @Component | backend/src/main/java/com/paiagent/engine/skill/SkillRegistry.java","children":[{"type":"record","label":"SkillSummary","meta":"内部类型，来源 backend/src/main/java/com/paiagent/engine/skill/SkillRegistry.java","children":[],"path":"backend/src/main/java/com/paiagent/engine/skill/SkillRegistry.java"}],"path":"backend/src/main/java/com/paiagent/engine/skill/SkillRegistry.java","packageName":"com.paiagent.engine.skill","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.entity","meta":"11 个类型","children":[{"type":"class","label":"ExecutionRecord","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/ExecutionRecord.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/ExecutionRecord.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"ExecutionSnapshot","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/ExecutionSnapshot.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/ExecutionSnapshot.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"ExecutionVariable","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/ExecutionVariable.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/ExecutionVariable.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"KnowledgeBase","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/KnowledgeBase.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/KnowledgeBase.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"KnowledgeChunk","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/KnowledgeChunk.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/KnowledgeChunk.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"KnowledgeDocument","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/KnowledgeDocument.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/KnowledgeDocument.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"KnowledgeIndexTask","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/KnowledgeIndexTask.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/KnowledgeIndexTask.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"LLMGlobalConfig","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/LLMGlobalConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/LLMGlobalConfig.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"McpToolConfig","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/McpToolConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/McpToolConfig.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"NodeDefinition","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/NodeDefinition.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/NodeDefinition.java","packageName":"com.paiagent.entity","annotations":["TableName"]},{"type":"class","label":"Workflow","meta":"com.paiagent.entity | 注解 @TableName | backend/src/main/java/com/paiagent/entity/Workflow.java","children":[],"path":"backend/src/main/java/com/paiagent/entity/Workflow.java","packageName":"com.paiagent.entity","annotations":["TableName"]}]},{"type":"package","label":"com.paiagent.interceptor","meta":"1 个类型","children":[{"type":"class","label":"AuthInterceptor","meta":"com.paiagent.interceptor | 注解 @Component | backend/src/main/java/com/paiagent/interceptor/AuthInterceptor.java","children":[],"path":"backend/src/main/java/com/paiagent/interceptor/AuthInterceptor.java","packageName":"com.paiagent.interceptor","annotations":["Component"]}]},{"type":"package","label":"com.paiagent.mapper","meta":"11 个类型","children":[{"type":"interface","label":"ExecutionRecordMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/ExecutionRecordMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/ExecutionRecordMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"ExecutionSnapshotMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/ExecutionSnapshotMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/ExecutionSnapshotMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"ExecutionVariableMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/ExecutionVariableMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/ExecutionVariableMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"KnowledgeBaseMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/KnowledgeBaseMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/KnowledgeBaseMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"KnowledgeChunkMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/KnowledgeChunkMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/KnowledgeChunkMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"KnowledgeDocumentMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/KnowledgeDocumentMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/KnowledgeDocumentMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"KnowledgeIndexTaskMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/KnowledgeIndexTaskMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/KnowledgeIndexTaskMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"LLMGlobalConfigMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/LLMGlobalConfigMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/LLMGlobalConfigMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"McpToolConfigMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/McpToolConfigMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/McpToolConfigMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"NodeDefinitionMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/NodeDefinitionMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/NodeDefinitionMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]},{"type":"interface","label":"WorkflowMapper","meta":"com.paiagent.mapper | 注解 @Mapper | backend/src/main/java/com/paiagent/mapper/WorkflowMapper.java","children":[],"path":"backend/src/main/java/com/paiagent/mapper/WorkflowMapper.java","packageName":"com.paiagent.mapper","annotations":["Mapper"]}]},{"type":"package","label":"com.paiagent.service","meta":"15 个类型","children":[{"type":"class","label":"AgentMemoryService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/AgentMemoryService.java","children":[{"type":"record","label":"MemoryRecord","meta":"内部类型，来源 backend/src/main/java/com/paiagent/service/AgentMemoryService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/AgentMemoryService.java"}],"path":"backend/src/main/java/com/paiagent/service/AgentMemoryService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"AgentPlanConfigResolver","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/AgentPlanConfigResolver.java","children":[],"path":"backend/src/main/java/com/paiagent/service/AgentPlanConfigResolver.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"AgnesVideoClient","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/AgnesVideoClient.java","children":[],"path":"backend/src/main/java/com/paiagent/service/AgnesVideoClient.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"AuthService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/AuthService.java","children":[{"type":"record","label":"AuthTokens","meta":"内部类型，来源 backend/src/main/java/com/paiagent/service/AuthService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/AuthService.java"}],"path":"backend/src/main/java/com/paiagent/service/AuthService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"KnowledgeBaseService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/KnowledgeBaseService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/KnowledgeBaseService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"LLMGlobalConfigService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/LLMGlobalConfigService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/LLMGlobalConfigService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"McpToolConfigService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/McpToolConfigService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/McpToolConfigService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"MinioService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/MinioService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/MinioService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"NodeDefinitionService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/NodeDefinitionService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/NodeDefinitionService.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"OpenAiCompatibleImageClient","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/OpenAiCompatibleImageClient.java","children":[],"path":"backend/src/main/java/com/paiagent/service/OpenAiCompatibleImageClient.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"record","label":"ResolvedAgentPlanConfig","meta":"com.paiagent.service | backend/src/main/java/com/paiagent/service/ResolvedAgentPlanConfig.java","children":[],"path":"backend/src/main/java/com/paiagent/service/ResolvedAgentPlanConfig.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"SearchInfinityMcpClient","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/SearchInfinityMcpClient.java","children":[{"type":"class","label":"McpSession","meta":"内部类型，来源 backend/src/main/java/com/paiagent/service/SearchInfinityMcpClient.java","children":[],"path":"backend/src/main/java/com/paiagent/service/SearchInfinityMcpClient.java"}],"path":"backend/src/main/java/com/paiagent/service/SearchInfinityMcpClient.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"StepFunImageClient","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/StepFunImageClient.java","children":[],"path":"backend/src/main/java/com/paiagent/service/StepFunImageClient.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"VolcengineAgentPlanClient","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/VolcengineAgentPlanClient.java","children":[],"path":"backend/src/main/java/com/paiagent/service/VolcengineAgentPlanClient.java","packageName":"com.paiagent.service","annotations":["Service"]},{"type":"class","label":"WorkflowService","meta":"com.paiagent.service | 注解 @Service | backend/src/main/java/com/paiagent/service/WorkflowService.java","children":[],"path":"backend/src/main/java/com/paiagent/service/WorkflowService.java","packageName":"com.paiagent.service","annotations":["Service"]}]}]},{"type":"module","label":"Backend Controller 与 HTTP 接口","meta":"9 个 Java 源文件","children":[{"type":"package","label":"com.paiagent.controller","meta":"9 个类型","children":[{"type":"class","label":"AuthController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 4 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/AuthController.java","children":[{"type":"endpoint","label":"POST /api/auth/login","meta":"login，源码 backend/src/main/java/com/paiagent/controller/AuthController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/AuthController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/auth/logout","meta":"logout，源码 backend/src/main/java/com/paiagent/controller/AuthController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/AuthController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/auth/refresh","meta":"refresh，源码 backend/src/main/java/com/paiagent/controller/AuthController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/AuthController.java","httpMethod":"POST"},{"type":"endpoint","label":"GET /api/auth/current","meta":"getCurrentUser，源码 backend/src/main/java/com/paiagent/controller/AuthController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/AuthController.java","httpMethod":"GET"}],"path":"backend/src/main/java/com/paiagent/controller/AuthController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"ExecutionController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 6 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[{"type":"endpoint","label":"POST /api/workflows/{id}/execute","meta":"executeWorkflow，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"POST"},{"type":"endpoint","label":"GET /api/workflows/{id}/executions/latest","meta":"getLatestExecution，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/workflows/{id}/executions/{executionId}/snapshots","meta":"getExecutionSnapshots，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/workflows/{id}/executions/{executionId}/variables","meta":"getExecutionVariables，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"GET"},{"type":"endpoint","label":"POST /api/workflows/{id}/executions/{executionId}/resume","meta":"resumeExecution，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"POST"},{"type":"endpoint","label":"GET /api/workflows/{id}/execute/stream","meta":"executeWorkflowStream，源码 backend/src/main/java/com/paiagent/controller/ExecutionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","httpMethod":"GET"}],"path":"backend/src/main/java/com/paiagent/controller/ExecutionController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"KnowledgeBaseController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 10 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[{"type":"endpoint","label":"GET /api/knowledge-bases","meta":"listKnowledgeBases，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"GET"},{"type":"endpoint","label":"POST /api/knowledge-bases","meta":"createKnowledgeBase，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"},{"type":"endpoint","label":"GET /api/knowledge-bases/{id}","meta":"getKnowledgeBase，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"GET"},{"type":"endpoint","label":"DELETE /api/knowledge-bases/{id}","meta":"deleteKnowledgeBase，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"DELETE"},{"type":"endpoint","label":"POST /api/knowledge-bases/{id}/documents/text","meta":"importText，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/knowledge-bases/{id}/documents/upload","meta":"uploadText，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"},{"type":"endpoint","label":"GET /api/knowledge-bases/{id}/documents","meta":"listDocuments，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"GET"},{"type":"endpoint","label":"POST /api/knowledge-bases/{id}/documents/{documentId}/preview-chunks","meta":"previewChunks，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/knowledge-bases/{id}/documents/{documentId}/index","meta":"indexDocument，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/knowledge-bases/{id}/search","meta":"search，源码 backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","httpMethod":"POST"}],"path":"backend/src/main/java/com/paiagent/controller/KnowledgeBaseController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"LLMConfigController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 7 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[{"type":"endpoint","label":"GET /api/llm-config/{provider}","meta":"listByProvider，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/llm-config","meta":"listAll，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/llm-config/detail/{id}","meta":"getById，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/llm-config/default/{provider}","meta":"getDefaultConfig，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"GET"},{"type":"endpoint","label":"POST /api/llm-config","meta":"saveConfig，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"POST"},{"type":"endpoint","label":"DELETE /api/llm-config/{id}","meta":"deleteConfig，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"DELETE"},{"type":"endpoint","label":"POST /api/llm-config/{id}/default","meta":"setDefaultConfig，源码 backend/src/main/java/com/paiagent/controller/LLMConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","httpMethod":"POST"}],"path":"backend/src/main/java/com/paiagent/controller/LLMConfigController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"McpToolConfigController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 6 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[{"type":"endpoint","label":"GET /api/mcp-tools","meta":"list，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"GET"},{"type":"endpoint","label":"POST /api/mcp-tools","meta":"create，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"POST"},{"type":"endpoint","label":"POST /api/mcp-tools/agent-plan-web-search","meta":"createAgentPlanWebSearch，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"POST"},{"type":"endpoint","label":"PUT /api/mcp-tools/{id}","meta":"update，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"PUT"},{"type":"endpoint","label":"DELETE /api/mcp-tools/{id}","meta":"delete，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"DELETE"},{"type":"endpoint","label":"POST /api/mcp-tools/{id}/test","meta":"test，源码 backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","httpMethod":"POST"}],"path":"backend/src/main/java/com/paiagent/controller/McpToolConfigController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"MediaController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 1 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/MediaController.java","children":[{"type":"endpoint","label":"POST /api/media/images","meta":"uploadImage，源码 backend/src/main/java/com/paiagent/controller/MediaController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/MediaController.java","httpMethod":"POST"}],"path":"backend/src/main/java/com/paiagent/controller/MediaController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"NodeDefinitionController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 1 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/NodeDefinitionController.java","children":[{"type":"endpoint","label":"GET /api/node-types","meta":"listNodeTypes，源码 backend/src/main/java/com/paiagent/controller/NodeDefinitionController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/NodeDefinitionController.java","httpMethod":"GET"}],"path":"backend/src/main/java/com/paiagent/controller/NodeDefinitionController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"SkillController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 3 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/SkillController.java","children":[{"type":"endpoint","label":"GET /api/skills","meta":"listSkills，源码 backend/src/main/java/com/paiagent/controller/SkillController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/SkillController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/skills/{name}","meta":"getSkill，源码 backend/src/main/java/com/paiagent/controller/SkillController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/SkillController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/skills/{skillName}/references/{referenceName}","meta":"getSkillReference，源码 backend/src/main/java/com/paiagent/controller/SkillController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/SkillController.java","httpMethod":"GET"}],"path":"backend/src/main/java/com/paiagent/controller/SkillController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]},{"type":"class","label":"WorkflowController","meta":"com.paiagent.controller | 注解 @RestController, @RequestMapping | 5 个 HTTP 接口 | backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[{"type":"endpoint","label":"POST /api/workflows","meta":"createWorkflow，源码 backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","httpMethod":"POST"},{"type":"endpoint","label":"PUT /api/workflows/{id}","meta":"updateWorkflow，源码 backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","httpMethod":"PUT"},{"type":"endpoint","label":"DELETE /api/workflows/{id}","meta":"deleteWorkflow，源码 backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","httpMethod":"DELETE"},{"type":"endpoint","label":"GET /api/workflows/{id}","meta":"getWorkflow，源码 backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","httpMethod":"GET"},{"type":"endpoint","label":"GET /api/workflows","meta":"listWorkflows，源码 backend/src/main/java/com/paiagent/controller/WorkflowController.java","children":[],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","httpMethod":"GET"}],"path":"backend/src/main/java/com/paiagent/controller/WorkflowController.java","packageName":"com.paiagent.controller","annotations":["RestController","RequestMapping"]}]}]},{"type":"module","label":"Frontend React 代码","meta":"29 个前端文件","children":[{"type":"package","label":"frontend/src","meta":"3 个文件","children":[{"type":"file","label":"App.tsx","meta":"frontend/src/App.tsx","children":[],"path":"frontend/src/App.tsx"},{"type":"file","label":"main.tsx","meta":"frontend/src/main.tsx","children":[],"path":"frontend/src/main.tsx"},{"type":"file","label":"vite-env.d.ts","meta":"frontend/src/vite-env.d.ts","children":[],"path":"frontend/src/vite-env.d.ts"}]},{"type":"package","label":"frontend/src/api","meta":"7 个文件","children":[{"type":"frontend-api","label":"auth.ts","meta":"frontend/src/api/auth.ts","children":[{"type":"interface","label":"LoginRequest","meta":"前端导出类型，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"interface","label":"LoginResponse","meta":"前端导出类型，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"interface","label":"RefreshTokenRequest","meta":"前端导出类型，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"interface","label":"ApiResult","meta":"前端导出类型，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"frontend-api","label":"login","meta":"前端导出方法，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"frontend-api","label":"logout","meta":"前端导出方法，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"frontend-api","label":"refreshToken","meta":"前端导出方法，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"},{"type":"frontend-api","label":"getCurrentUser","meta":"前端导出方法，来源 frontend/src/api/auth.ts","children":[],"path":"frontend/src/api/auth.ts"}],"path":"frontend/src/api/auth.ts"},{"type":"frontend-api","label":"knowledge.ts","meta":"frontend/src/api/knowledge.ts","children":[{"type":"interface","label":"KnowledgeBase","meta":"前端导出类型，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"interface","label":"KnowledgeDocument","meta":"前端导出类型，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"interface","label":"KnowledgeChunkPreview","meta":"前端导出类型，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"interface","label":"KnowledgeIndexTask","meta":"前端导出类型，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"interface","label":"KnowledgeSearchResult","meta":"前端导出类型，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"getKnowledgeBases","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"createKnowledgeBase","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"getKnowledgeBase","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"deleteKnowledgeBase","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"importKnowledgeText","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"uploadKnowledgeTextFile","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"previewKnowledgeChunks","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"indexKnowledgeDocument","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"searchKnowledgeBase","meta":"前端导出方法，来源 frontend/src/api/knowledge.ts","children":[],"path":"frontend/src/api/knowledge.ts"}],"path":"frontend/src/api/knowledge.ts"},{"type":"frontend-api","label":"llmConfig.ts","meta":"frontend/src/api/llmConfig.ts","children":[{"type":"interface","label":"LLMGlobalConfig","meta":"前端导出类型，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"interface","label":"LLMConfigRequest","meta":"前端导出类型，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"interface","label":"ApiResult","meta":"前端导出类型，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"getAllConfigs","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"getConfigsByProvider","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"getConfigById","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"getDefaultConfig","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"saveConfig","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"deleteConfig","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"setDefaultConfig","meta":"前端导出方法，来源 frontend/src/api/llmConfig.ts","children":[],"path":"frontend/src/api/llmConfig.ts"}],"path":"frontend/src/api/llmConfig.ts"},{"type":"frontend-api","label":"mcpTools.ts","meta":"frontend/src/api/mcpTools.ts","children":[{"type":"interface","label":"McpToolConfig","meta":"前端导出类型，来源 frontend/src/api/mcpTools.ts","children":[],"path":"frontend/src/api/mcpTools.ts"},{"type":"frontend-api","label":"getMcpTools","meta":"前端导出方法，来源 frontend/src/api/mcpTools.ts","children":[],"path":"frontend/src/api/mcpTools.ts"},{"type":"frontend-api","label":"createAgentPlanWebSearchMcp","meta":"前端导出方法，来源 frontend/src/api/mcpTools.ts","children":[],"path":"frontend/src/api/mcpTools.ts"},{"type":"frontend-api","label":"deleteMcpTool","meta":"前端导出方法，来源 frontend/src/api/mcpTools.ts","children":[],"path":"frontend/src/api/mcpTools.ts"},{"type":"frontend-api","label":"testMcpTool","meta":"前端导出方法，来源 frontend/src/api/mcpTools.ts","children":[],"path":"frontend/src/api/mcpTools.ts"}],"path":"frontend/src/api/mcpTools.ts"},{"type":"frontend-api","label":"media.ts","meta":"frontend/src/api/media.ts","children":[{"type":"interface","label":"MediaUploadResult","meta":"前端导出类型，来源 frontend/src/api/media.ts","children":[],"path":"frontend/src/api/media.ts"},{"type":"frontend-api","label":"uploadWorkflowImage","meta":"前端导出方法，来源 frontend/src/api/media.ts","children":[],"path":"frontend/src/api/media.ts"}],"path":"frontend/src/api/media.ts"},{"type":"frontend-api","label":"skill.ts","meta":"frontend/src/api/skill.ts","children":[{"type":"interface","label":"SkillSummary","meta":"前端导出类型，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"},{"type":"interface","label":"Skill","meta":"前端导出类型，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"},{"type":"interface","label":"ApiResult","meta":"前端导出类型，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"},{"type":"frontend-api","label":"getSkills","meta":"前端导出方法，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"},{"type":"frontend-api","label":"getSkill","meta":"前端导出方法，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"},{"type":"frontend-api","label":"getSkillReference","meta":"前端导出方法，来源 frontend/src/api/skill.ts","children":[],"path":"frontend/src/api/skill.ts"}],"path":"frontend/src/api/skill.ts"},{"type":"frontend-api","label":"workflow.ts","meta":"frontend/src/api/workflow.ts","children":[{"type":"interface","label":"NodeDefinition","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"WorkflowData","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"Workflow","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ApiResult","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ExecutionNodeResult","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ExecutionResponse","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ResumeExecutionRequest","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ExecutionSnapshot","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"interface","label":"ExecutionEvent","meta":"前端导出类型，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"getNodeTypes","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"createWorkflow","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"getWorkflows","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"getWorkflow","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"updateWorkflow","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"deleteWorkflow","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"executeWorkflow","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"getLatestExecution","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"getExecutionSnapshots","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"resumeWorkflowExecution","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"},{"type":"frontend-api","label":"executeWorkflowStream","meta":"前端导出方法，来源 frontend/src/api/workflow.ts","children":[],"path":"frontend/src/api/workflow.ts"}],"path":"frontend/src/api/workflow.ts"}]},{"type":"package","label":"frontend/src/components","meta":"6 个文件","children":[{"type":"component","label":"AudioPlayer.tsx","meta":"frontend/src/components/AudioPlayer.tsx","children":[],"path":"frontend/src/components/AudioPlayer.tsx"},{"type":"component","label":"DebugDrawer.tsx","meta":"frontend/src/components/DebugDrawer.tsx","children":[],"path":"frontend/src/components/DebugDrawer.tsx"},{"type":"component","label":"FlowCanvas.tsx","meta":"frontend/src/components/FlowCanvas.tsx","children":[],"path":"frontend/src/components/FlowCanvas.tsx"},{"type":"component","label":"LLMConfigModal.tsx","meta":"frontend/src/components/LLMConfigModal.tsx","children":[],"path":"frontend/src/components/LLMConfigModal.tsx"},{"type":"component","label":"NodePanel.tsx","meta":"frontend/src/components/NodePanel.tsx","children":[],"path":"frontend/src/components/NodePanel.tsx"},{"type":"component","label":"SkillSelector.tsx","meta":"frontend/src/components/SkillSelector.tsx","children":[],"path":"frontend/src/components/SkillSelector.tsx"}]},{"type":"package","label":"frontend/src/config","meta":"1 个文件","children":[{"type":"file","label":"api.ts","meta":"frontend/src/config/api.ts","children":[],"path":"frontend/src/config/api.ts"}]},{"type":"package","label":"frontend/src/pages","meta":"5 个文件","children":[{"type":"page","label":"EditorPage.tsx","meta":"frontend/src/pages/EditorPage.tsx","children":[],"path":"frontend/src/pages/EditorPage.tsx"},{"type":"page","label":"KnowledgePage.tsx","meta":"frontend/src/pages/KnowledgePage.tsx","children":[],"path":"frontend/src/pages/KnowledgePage.tsx"},{"type":"page","label":"LoginPage.tsx","meta":"frontend/src/pages/LoginPage.tsx","children":[],"path":"frontend/src/pages/LoginPage.tsx"},{"type":"page","label":"MainPage.tsx","meta":"frontend/src/pages/MainPage.tsx","children":[],"path":"frontend/src/pages/MainPage.tsx"},{"type":"page","label":"McpToolPage.tsx","meta":"frontend/src/pages/McpToolPage.tsx","children":[],"path":"frontend/src/pages/McpToolPage.tsx"}]},{"type":"package","label":"frontend/src/store","meta":"3 个文件","children":[{"type":"store","label":"authStore.ts","meta":"frontend/src/store/authStore.ts","children":[],"path":"frontend/src/store/authStore.ts"},{"type":"store","label":"llmConfigStore.ts","meta":"frontend/src/store/llmConfigStore.ts","children":[],"path":"frontend/src/store/llmConfigStore.ts"},{"type":"store","label":"workflowStore.ts","meta":"frontend/src/store/workflowStore.ts","children":[],"path":"frontend/src/store/workflowStore.ts"}]},{"type":"package","label":"frontend/src/utils","meta":"4 个文件","children":[{"type":"util","label":"auth.ts","meta":"frontend/src/utils/auth.ts","children":[],"path":"frontend/src/utils/auth.ts"},{"type":"util","label":"provider.ts","meta":"frontend/src/utils/provider.ts","children":[],"path":"frontend/src/utils/provider.ts"},{"type":"util","label":"request.ts","meta":"frontend/src/utils/request.ts","children":[],"path":"frontend/src/utils/request.ts"},{"type":"util","label":"workflowNode.ts","meta":"frontend/src/utils/workflowNode.ts","children":[],"path":"frontend/src/utils/workflowNode.ts"}]}]},{"type":"module","label":"路由","meta":"React Router","children":[{"type":"module","label":"前端静态路由","meta":"7 条路由","children":[{"type":"route","label":"/login","meta":"组件 LoginPage","children":[],"path":"/login"},{"type":"route","label":"/editor","meta":"组件 EditorPage","children":[],"path":"/editor"},{"type":"route","label":"/editor/:id","meta":"组件 EditorPage","children":[],"path":"/editor/:id"},{"type":"route","label":"/knowledge","meta":"组件 KnowledgePage","children":[],"path":"/knowledge"},{"type":"route","label":"/mcp-tools","meta":"组件 McpToolPage","children":[],"path":"/mcp-tools"},{"type":"route","label":"/","meta":"组件 Navigate","children":[],"path":"/"},{"type":"route","label":"*","meta":"组件 Navigate","children":[],"path":"*"}]}]},{"type":"module","label":"MySQL Schema","meta":"3 个 SQL 文件，13 张表","children":[{"type":"module","label":"数据库表","meta":"13 张表","children":[{"type":"table","label":"agent_memory","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"agent_memory_embedding","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"execution_record","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"execution_snapshot","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"execution_variable","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"knowledge_base","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"knowledge_chunk","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"knowledge_document","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"knowledge_index_task","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"llm_global_config","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"mcp_tool_config","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"node_definition","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"},{"type":"table","label":"workflow","meta":"SQL CREATE TABLE","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql, backend/src/main/resources/migration_add_engine_type.sql, backend/src/main/resources/schema.sql"}]},{"type":"module","label":"SQL 文件","meta":"3 个文件","children":[{"type":"file","label":"V20250520__add_execution_snapshot_tables.sql","meta":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql"},{"type":"file","label":"migration_add_engine_type.sql","meta":"backend/src/main/resources/migration_add_engine_type.sql","children":[],"path":"backend/src/main/resources/migration_add_engine_type.sql"},{"type":"file","label":"schema.sql","meta":"backend/src/main/resources/schema.sql","children":[],"path":"backend/src/main/resources/schema.sql"}]}]},{"type":"module","label":"Skills 资源","meta":"3 个文件","children":[{"type":"package","label":"backend/src/main/resources/skills/ai-podcast","meta":"1 个文件","children":[{"type":"skill","label":"SKILL.md","meta":"backend/src/main/resources/skills/ai-podcast/SKILL.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/SKILL.md"}]},{"type":"package","label":"backend/src/main/resources/skills/ai-podcast/reference","meta":"2 个文件","children":[{"type":"skill","label":"script-template.md","meta":"backend/src/main/resources/skills/ai-podcast/reference/script-template.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/reference/script-template.md"},{"type":"skill","label":"voice-guide.md","meta":"backend/src/main/resources/skills/ai-podcast/reference/voice-guide.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/reference/voice-guide.md"}]}]},{"type":"module","label":"Backend 资源与迁移","meta":"9 个文件","children":[{"type":"package","label":"backend/src/main/resources","meta":"3 个文件","children":[{"type":"config","label":"application.yml","meta":"backend/src/main/resources/application.yml","children":[],"path":"backend/src/main/resources/application.yml"},{"type":"file","label":"migration_add_engine_type.sql","meta":"backend/src/main/resources/migration_add_engine_type.sql","children":[],"path":"backend/src/main/resources/migration_add_engine_type.sql"},{"type":"file","label":"schema.sql","meta":"backend/src/main/resources/schema.sql","children":[],"path":"backend/src/main/resources/schema.sql"}]},{"type":"package","label":"backend/src/main/resources/db/migration","meta":"1 个文件","children":[{"type":"file","label":"V20250520__add_execution_snapshot_tables.sql","meta":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql","children":[],"path":"backend/src/main/resources/db/migration/V20250520__add_execution_snapshot_tables.sql"}]},{"type":"package","label":"backend/src/main/resources/mapper","meta":"2 个文件","children":[{"type":"mapper-xml","label":"ExecutionSnapshotMapper.xml","meta":"backend/src/main/resources/mapper/ExecutionSnapshotMapper.xml","children":[],"path":"backend/src/main/resources/mapper/ExecutionSnapshotMapper.xml"},{"type":"mapper-xml","label":"ExecutionVariableMapper.xml","meta":"backend/src/main/resources/mapper/ExecutionVariableMapper.xml","children":[],"path":"backend/src/main/resources/mapper/ExecutionVariableMapper.xml"}]},{"type":"package","label":"backend/src/main/resources/skills/ai-podcast","meta":"1 个文件","children":[{"type":"config","label":"SKILL.md","meta":"backend/src/main/resources/skills/ai-podcast/SKILL.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/SKILL.md"}]},{"type":"package","label":"backend/src/main/resources/skills/ai-podcast/reference","meta":"2 个文件","children":[{"type":"config","label":"script-template.md","meta":"backend/src/main/resources/skills/ai-podcast/reference/script-template.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/reference/script-template.md"},{"type":"config","label":"voice-guide.md","meta":"backend/src/main/resources/skills/ai-podcast/reference/voice-guide.md","children":[],"path":"backend/src/main/resources/skills/ai-podcast/reference/voice-guide.md"}]}]},{"type":"module","label":"Backend 测试","meta":"16 个 Java 源文件","children":[{"type":"package","label":"com.paiagent","meta":"1 个类型","children":[{"type":"class","label":"PaiAgentApplicationTests","meta":"com.paiagent | backend/src/test/java/com/paiagent/PaiAgentApplicationTests.java","children":[],"path":"backend/src/test/java/com/paiagent/PaiAgentApplicationTests.java","packageName":"com.paiagent","annotations":[]}]},{"type":"package","label":"com.paiagent.engine","meta":"2 个类型","children":[{"type":"class","label":"ConditionBranchRoutingTest","meta":"com.paiagent.engine | backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java","children":[{"type":"class","label":"MockLlmNodeExecutor","meta":"内部类型，来源 backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java"},{"type":"class","label":"SimpleOutputNodeExecutor","meta":"内部类型，来源 backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java"}],"path":"backend/src/test/java/com/paiagent/engine/ConditionBranchRoutingTest.java","packageName":"com.paiagent.engine","annotations":[]},{"type":"class","label":"WorkflowConfigParserTest","meta":"com.paiagent.engine | backend/src/test/java/com/paiagent/engine/WorkflowConfigParserTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/WorkflowConfigParserTest.java","packageName":"com.paiagent.engine","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.agent.tool","meta":"1 个类型","children":[{"type":"class","label":"KnowledgeRetrieveToolTest","meta":"com.paiagent.engine.agent.tool | backend/src/test/java/com/paiagent/engine/agent/tool/KnowledgeRetrieveToolTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/agent/tool/KnowledgeRetrieveToolTest.java","packageName":"com.paiagent.engine.agent.tool","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.executor.impl","meta":"3 个类型","children":[{"type":"class","label":"ConditionNodeExecutorTest","meta":"com.paiagent.engine.executor.impl | backend/src/test/java/com/paiagent/engine/executor/impl/ConditionNodeExecutorTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/executor/impl/ConditionNodeExecutorTest.java","packageName":"com.paiagent.engine.executor.impl","annotations":[]},{"type":"class","label":"ImageGenerateNodeExecutorTest","meta":"com.paiagent.engine.executor.impl | backend/src/test/java/com/paiagent/engine/executor/impl/ImageGenerateNodeExecutorTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/executor/impl/ImageGenerateNodeExecutorTest.java","packageName":"com.paiagent.engine.executor.impl","annotations":[]},{"type":"class","label":"VideoGenerateNodeExecutorTest","meta":"com.paiagent.engine.executor.impl | backend/src/test/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutorTest.java","children":[{"type":"class","label":"methods","meta":"内部类型，来源 backend/src/test/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutorTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutorTest.java"}],"path":"backend/src/test/java/com/paiagent/engine/executor/impl/VideoGenerateNodeExecutorTest.java","packageName":"com.paiagent.engine.executor.impl","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.langgraph","meta":"2 个类型","children":[{"type":"class","label":"LangGraphBasicTest","meta":"com.paiagent.engine.langgraph | backend/src/test/java/com/paiagent/engine/langgraph/LangGraphBasicTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/langgraph/LangGraphBasicTest.java","packageName":"com.paiagent.engine.langgraph","annotations":[]},{"type":"class","label":"LangGraphWorkflowEngineTest","meta":"com.paiagent.engine.langgraph | backend/src/test/java/com/paiagent/engine/langgraph/LangGraphWorkflowEngineTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/langgraph/LangGraphWorkflowEngineTest.java","packageName":"com.paiagent.engine.langgraph","annotations":[]}]},{"type":"package","label":"com.paiagent.engine.llm","meta":"1 个类型","children":[{"type":"class","label":"ChatClientFactoryTest","meta":"com.paiagent.engine.llm | backend/src/test/java/com/paiagent/engine/llm/ChatClientFactoryTest.java","children":[],"path":"backend/src/test/java/com/paiagent/engine/llm/ChatClientFactoryTest.java","packageName":"com.paiagent.engine.llm","annotations":[]}]},{"type":"package","label":"com.paiagent.service","meta":"6 个类型","children":[{"type":"class","label":"AgentPlanConfigResolverTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/AgentPlanConfigResolverTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/AgentPlanConfigResolverTest.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"AgnesVideoClientTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/AgnesVideoClientTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/AgnesVideoClientTest.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"AuthServiceTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/AuthServiceTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/AuthServiceTest.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"KnowledgeBaseServiceTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/KnowledgeBaseServiceTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/KnowledgeBaseServiceTest.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"OpenAiCompatibleImageClientTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/OpenAiCompatibleImageClientTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/OpenAiCompatibleImageClientTest.java","packageName":"com.paiagent.service","annotations":[]},{"type":"class","label":"StepFunImageClientTest","meta":"com.paiagent.service | backend/src/test/java/com/paiagent/service/StepFunImageClientTest.java","children":[],"path":"backend/src/test/java/com/paiagent/service/StepFunImageClientTest.java","packageName":"com.paiagent.service","annotations":[]}]}]},{"type":"module","label":"项目文档","meta":"10 个文件","children":[{"type":"package","label":"docs","meta":"10 个文件","children":[{"type":"doc","label":"agent-plan-harness-integration-plan.md","meta":"docs/agent-plan-harness-integration-plan.md","children":[],"path":"docs/agent-plan-harness-integration-plan.md"},{"type":"doc","label":"FINAL_SUMMARY.md","meta":"docs/FINAL_SUMMARY.md","children":[],"path":"docs/FINAL_SUMMARY.md"},{"type":"doc","label":"mermaid.md","meta":"docs/mermaid.md","children":[],"path":"docs/mermaid.md"},{"type":"doc","label":"PROGRESS.md","meta":"docs/PROGRESS.md","children":[],"path":"docs/PROGRESS.md"},{"type":"doc","label":"PROJECT_COMPLETION_REPORT.md","meta":"docs/PROJECT_COMPLETION_REPORT.md","children":[],"path":"docs/PROJECT_COMPLETION_REPORT.md"},{"type":"doc","label":"PROJECT_STATUS.md","meta":"docs/PROJECT_STATUS.md","children":[],"path":"docs/PROJECT_STATUS.md"},{"type":"doc","label":"react-agent-phases.md","meta":"docs/react-agent-phases.md","children":[],"path":"docs/react-agent-phases.md"},{"type":"doc","label":"resume.md","meta":"docs/resume.md","children":[],"path":"docs/resume.md"},{"type":"doc","label":"SUMMARY.md","meta":"docs/SUMMARY.md","children":[],"path":"docs/SUMMARY.md"},{"type":"doc","label":"USER_GUIDE.md","meta":"docs/USER_GUIDE.md","children":[],"path":"docs/USER_GUIDE.md"}]}]}]};
+    const typeLabelMap = {"root":"根节点","module":"模块","package":"包","class":"类","interface":"接口","enum":"枚举","record":"记录","annotation":"注解","file":"文件","controller":"控制器","endpoint":"HTTP 接口","page":"页面","frontend-api":"前端 API","component":"组件","store":"状态","util":"工具","router":"路由","layout":"布局","config":"配置","mapper-xml":"Mapper XML","service":"服务","mapper":"Mapper","repository":"Repository","entity":"实体","dto":"DTO","test":"测试","table":"数据表","route":"路由入口","doc":"文档","resource":"资源","skill":"Skill","task":"任务","executor":"执行器","tool":"工具类","engine-core":"引擎核心"};
+  </script>
+  <script>
+    (() => {
+      const treeRoot = document.getElementById("tree");
+      const search = document.getElementById("search");
+      const count = document.getElementById("result-count");
+      const detailTitle = document.getElementById("detail-title");
+      const detailType = document.getElementById("detail-type");
+      const detailBody = document.getElementById("detail-body");
+      const typeStrip = document.getElementById("type-strip");
+      const nodeRecords = [];
+      const recordsById = new Map();
+      let activeType = "all";
+      let nextId = 0;
+
+      function walkData(item, parent = null, depth = 0, branch = []) {
+        const id = nextId++;
+        const record = {
+          id,
+          data: item,
+          parent,
+          depth,
+          branch: [...branch, item.label],
+        };
+        nodeRecords.push(record);
+        recordsById.set(id, record);
+        item.children.forEach((child) => walkData(child, record, depth + 1, record.branch));
+        record.subtreeEnd = nextId - 1;
+        return record;
+      }
+      walkData(treeData);
+
+      function getChildRecord(record, index) {
+        let cursor = record.id + 1;
+        for (let i = 0; i < index; i += 1) {
+          cursor = getSubtreeEnd(cursor) + 1;
+        }
+        return recordsById.get(cursor);
+      }
+
+      function getSubtreeEnd(id) {
+        const record = recordsById.get(id);
+        return record.subtreeEnd;
+      }
+
+      function buildNode(record) {
+        const li = document.createElement("li");
+        li.dataset.id = record.id;
+        li.dataset.type = record.data.type;
+        li.dataset.depth = record.depth;
+        record.element = li;
+
+        const row = document.createElement("div");
+        row.className = "node-row";
+        record.row = row;
+
+        const toggle = document.createElement("button");
+        toggle.className = "toggle";
+        toggle.type = "button";
+        toggle.textContent = record.data.children.length ? "+" : "·";
+        if (!record.data.children.length) toggle.classList.add("placeholder");
+        row.appendChild(toggle);
+
+        const badge = document.createElement("span");
+        badge.className = "badge t-" + record.data.type;
+        badge.textContent = typeLabelMap[record.data.type] || record.data.type;
+        row.appendChild(badge);
+
+        const label = document.createElement("button");
+        label.className = "node-label";
+        label.type = "button";
+        label.textContent = record.data.label;
+        row.appendChild(label);
+
+        if (record.data.meta) {
+          const meta = document.createElement("span");
+          meta.className = "node-meta";
+          meta.textContent = record.data.meta;
+          row.appendChild(meta);
+        }
+        li.appendChild(row);
+
+        toggle.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (!record.data.children.length) return;
+          li.classList.toggle("collapsed");
+          toggle.textContent = li.classList.contains("collapsed") ? "+" : "−";
+        });
+        label.addEventListener("click", () => selectRecord(record));
+        row.addEventListener("click", () => selectRecord(record));
+
+        if (record.data.children.length) {
+          const ul = document.createElement("ul");
+          record.data.children.forEach((child, index) => {
+            ul.appendChild(buildNode(getChildRecord(record, index)));
+          });
+          li.appendChild(ul);
+        }
+        return li;
+      }
+
+      function setDepth(maxDepth) {
+        for (const record of nodeRecords) {
+          if (!record.element || !record.data.children.length) continue;
+          const collapsed = record.depth >= maxDepth;
+          record.element.classList.toggle("collapsed", collapsed);
+          const toggle = record.element.querySelector(":scope > .node-row > .toggle");
+          if (toggle) toggle.textContent = collapsed ? "+" : "−";
+        }
+      }
+
+      function expandAll() {
+        for (const record of nodeRecords) {
+          if (!record.element || !record.data.children.length) continue;
+          record.element.classList.remove("collapsed");
+          const toggle = record.element.querySelector(":scope > .node-row > .toggle");
+          if (toggle) toggle.textContent = "−";
+        }
+      }
+
+      function collapseAll() {
+        for (const record of nodeRecords) {
+          if (!record.element || !record.data.children.length) continue;
+          const collapsed = record.depth > 0;
+          record.element.classList.toggle("collapsed", collapsed);
+          const toggle = record.element.querySelector(":scope > .node-row > .toggle");
+          if (toggle) toggle.textContent = collapsed ? "+" : "−";
+        }
+      }
+
+      function selectRecord(record) {
+        document.querySelectorAll(".node-row.is-selected").forEach((item) =>
+          item.classList.remove("is-selected"),
+        );
+        record.row.classList.add("is-selected");
+        detailTitle.textContent = record.data.label;
+        detailType.className = "badge t-" + record.data.type;
+        detailType.textContent = typeLabelMap[record.data.type] || record.data.type;
+        const annotations = record.data.annotations?.length
+          ? record.data.annotations.map((item) => "@" + item).join(", ")
+          : "无";
+        detailBody.innerHTML = "";
+        const rows = [
+          ["节点类型", typeLabelMap[record.data.type] || record.data.type],
+          ["源码路径", record.data.path || "无"],
+          ["包名", record.data.packageName || "无"],
+          ["注解", annotations],
+          ["直属子节点", String(record.data.children.length)],
+          ["树路径", record.branch.join(" / ")],
+          ["附加信息", record.data.meta || "无"],
+        ];
+        rows.forEach(([label, value]) => {
+          const div = document.createElement("div");
+          div.className = "detail-item";
+          const span = document.createElement("span");
+          span.textContent = label;
+          const strong = document.createElement("strong");
+          strong.textContent = value;
+          div.append(span, strong);
+          detailBody.appendChild(div);
+        });
+      }
+
+      function searchable(record) {
+        return [
+          record.data.label,
+          record.data.type,
+          record.data.meta,
+          record.data.path,
+          record.data.packageName,
+          ...(record.data.annotations || []),
+          ...record.branch,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+      }
+
+      function applyFilters() {
+        const keyword = search.value.trim().toLowerCase();
+        const visible = new Set();
+        for (const record of nodeRecords) {
+          const typeMatch = activeType === "all" || record.data.type === activeType;
+          const keywordMatch = !keyword || searchable(record).includes(keyword);
+          if (typeMatch && keywordMatch) {
+            let current = record;
+            while (current) {
+              visible.add(current.id);
+              current = current.parent;
+            }
+          }
+        }
+        for (const record of nodeRecords) {
+          if (!record.element) continue;
+          record.element.classList.toggle("filtered-out", !visible.has(record.id));
+          if (visible.has(record.id) && record.data.children.length) {
+            record.element.classList.remove("collapsed");
+            const toggle = record.element.querySelector(":scope > .node-row > .toggle");
+            if (toggle) toggle.textContent = "−";
+          }
+        }
+        count.textContent =
+          "显示 " + visible.size + " / " + nodeRecords.length + " 个节点";
+      }
+
+      treeRoot.appendChild(buildNode(nodeRecords[0]));
+      typeStrip.addEventListener("click", (event) => {
+        const button = event.target.closest(".type-chip");
+        if (!button) return;
+        activeType = button.dataset.type;
+        typeStrip.querySelectorAll(".type-chip").forEach((item) =>
+          item.classList.toggle("is-active", item === button),
+        );
+        applyFilters();
+      });
+      search.addEventListener("input", applyFilters);
+      document.getElementById("expand-all").addEventListener("click", expandAll);
+      document.getElementById("collapse-all").addEventListener("click", collapseAll);
+      document.getElementById("expand-two").addEventListener("click", () => setDepth(2));
+      document.getElementById("clear-filter").addEventListener("click", () => {
+        search.value = "";
+        activeType = "all";
+        typeStrip.querySelectorAll(".type-chip").forEach((item) =>
+          item.classList.toggle("is-active", item.dataset.type === "all"),
+        );
+        applyFilters();
+        setDepth(2);
+      });
+      document.getElementById("print").addEventListener("click", () => window.print());
+      setDepth(2);
+      applyFilters();
+      selectRecord(nodeRecords[0]);
+    })();
+  </script>
+</body>
+</html>

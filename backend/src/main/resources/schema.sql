@@ -258,7 +258,8 @@ CREATE TABLE IF NOT EXISTS knowledge_chunk (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     deleted TINYINT DEFAULT 0 COMMENT '逻辑删除标识',
     INDEX idx_knowledge_base_id (knowledge_base_id),
-    INDEX idx_knowledge_document_id (document_id)
+    INDEX idx_knowledge_document_id (document_id),
+    FULLTEXT INDEX ft_knowledge_chunk_content (content) WITH PARSER ngram
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='知识库片段表';
 
 CREATE TABLE IF NOT EXISTS knowledge_index_task (
