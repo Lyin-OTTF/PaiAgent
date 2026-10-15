@@ -10,6 +10,14 @@ import com.paiagent.engine.executor.NodeExecutorFactory;
 import com.paiagent.engine.model.WorkflowConfig;
 import com.paiagent.engine.model.WorkflowEdge;
 import com.paiagent.engine.model.WorkflowNode;
+import com.paiagent.engine.scheduler.InputResolver;
+import com.paiagent.engine.scheduler.NodeOutcome;
+import com.paiagent.engine.scheduler.NodeResult;
+import com.paiagent.engine.scheduler.NodeTaskExecutor;
+import com.paiagent.engine.scheduler.ParallelDAGScheduler;
+import com.paiagent.engine.scheduler.ResumeContext;
+import com.paiagent.engine.scheduler.ScheduleOutcome;
+import com.paiagent.engine.scheduler.SchedulerConfig;
 import com.paiagent.entity.ExecutionRecord;
 import com.paiagent.entity.ExecutionSnapshot;
 import com.paiagent.entity.ExecutionVariable;
@@ -19,11 +27,13 @@ import com.paiagent.mapper.ExecutionSnapshotMapper;
 import com.paiagent.mapper.ExecutionVariableMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.*;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
 @Slf4j
@@ -47,6 +57,21 @@ public class WorkflowEngine implements WorkflowExecutor {
 
     @Autowired(required = false)
     private ExecutionVariableMapper executionVariableMapper;
+
+    @Autowired
+    private ParallelDAGScheduler parallelScheduler;
+
+    /**
+     * 是否启用有界并行 DAG 调度（默认关闭，保持既有串行行为）
+     */
+    @Value("${paiagent.engine.parallel-enabled:false}")
+    private boolean parallelEnabled;
+
+    /**
+     * 并行调度线程池大小（有界并发的上限）
+     */
+    @Value("${paiagent.engine.scheduler-pool-size:4}")
+    private int schedulerPoolSize;
     
     @Override
     public ExecutionResponse execute(Workflow workflow, String inputData) {
@@ -131,6 +156,10 @@ public class WorkflowEngine implements WorkflowExecutor {
                                            ResumeState resumeState,
                                            long startTime,
                                            Consumer<ExecutionEvent> eventCallback) {
+        if (parallelEnabled) {
+            return executeNodesParallel(record, flowId, inputData, sortedNodes, indexes, resumeState, startTime, eventCallback);
+        }
+
         Map<String, List<WorkflowEdge>> edgesBySource = indexes.edgesBySource;
         Map<String, List<WorkflowEdge>> edgesByTarget = indexes.edgesByTarget;
         
@@ -243,13 +272,29 @@ public class WorkflowEngine implements WorkflowExecutor {
             }
         }
         
+        return finishExecution(record, flowId, inputData, status, errorMessage, nodeResults, currentInput, outputData, startTime, eventCallback);
+    }
+
+    /**
+     * 收尾：发送完成事件、落库执行记录并组装响应（串行与并行共用，保证两种模式行为一致）
+     */
+    private ExecutionResponse finishExecution(ExecutionRecord record,
+                                              Long flowId,
+                                              String inputData,
+                                              String status,
+                                              String errorMessage,
+                                              List<ExecutionResponse.NodeResult> nodeResults,
+                                              Map<String, Object> currentInput,
+                                              String outputData,
+                                              long startTime,
+                                              Consumer<ExecutionEvent> eventCallback) {
         long endTime = System.currentTimeMillis();
         int duration = (int) (endTime - startTime);
-        
+
         if (eventCallback != null) {
             eventCallback.accept(ExecutionEvent.workflowComplete(status, currentInput, duration));
         }
-        
+
         record.setFlowId(flowId);
         String inputDataJson = buildInputDataJson(inputData);
         log.info("保存执行记录 - inputData: {}", inputDataJson);
@@ -261,7 +306,7 @@ public class WorkflowEngine implements WorkflowExecutor {
         record.setErrorMessage(errorMessage);
         record.setDuration(duration);
         executionRecordMapper.updateById(record);
-        
+
         ExecutionResponse response = new ExecutionResponse();
         response.setExecutionId(record.getId());
         response.setStatus(status);
@@ -270,8 +315,166 @@ public class WorkflowEngine implements WorkflowExecutor {
         response.setOutputData(outputData);
         response.setDuration(duration);
         response.setErrorMessage(errorMessage);
-        
+
         return response;
+    }
+
+    /**
+     * 有界并行执行（迭代4）：将串行循环中的单节点动作适配为 NodeTaskExecutor，
+     * 交由 ParallelDAGScheduler 调度；收尾与串行路径共用 finishExecution。
+     */
+    private ExecutionResponse executeNodesParallel(ExecutionRecord record,
+                                                   Long flowId,
+                                                   String inputData,
+                                                   List<WorkflowNode> sortedNodes,
+                                                   EdgeIndexes indexes,
+                                                   ResumeState resumeState,
+                                                   long startTime,
+                                                   Consumer<ExecutionEvent> eventCallback) {
+        Map<String, Object> initialInput = new HashMap<>();
+        initialInput.put("input", inputData);
+        initialInput.putAll(resumeState.latestOutput);
+        initialInput.putAll(resumeState.modifiedVariables);
+
+        // 条件分支跳过集合：与调度器各自的集合保持同源（均种子自 resumeState.skippedNodes，
+        // 并按相同增量更新），用于在并行环境下复现串行的 markSkippedNodes 语义
+        final Object skipLock = new Object();
+        final Set<String> liveSkipped = new LinkedHashSet<>(resumeState.skippedNodes);
+        Supplier<Set<String>> skippedView = () -> {
+            synchronized (skipLock) {
+                return new LinkedHashSet<>(liveSkipped);
+            }
+        };
+
+        NodeTaskExecutor taskExecutor = (node, input) -> {
+            long nodeStartTime = System.currentTimeMillis();
+            ExecutionSnapshot snapshot = createOrUpdateSnapshotStart(
+                    record.getId(), flowId, node, input, sortedNodes.indexOf(node), nodeStartTime);
+
+            if (eventCallback != null) {
+                eventCallback.accept(ExecutionEvent.nodeStart(node.getId(), node.getType()));
+            }
+
+            try {
+                NodeExecutor executor = executorFactory.getExecutor(node.getType());
+                Map<String, Object> rawOutput = executor.execute(node, input, eventCallback);
+                Map<String, Object> output = stripRuntimeFields(rawOutput);
+                int nodeDuration = (int) (System.currentTimeMillis() - nodeStartTime);
+
+                markSnapshotSuccess(snapshot, output, nodeDuration, System.currentTimeMillis());
+                if (eventCallback != null) {
+                    Map<String, Object> eventData = new HashMap<>();
+                    eventData.put("input", stripRuntimeFields(input));
+                    eventData.put("output", output);
+                    eventData.put("duration", nodeDuration);
+                    eventCallback.accept(ExecutionEvent.nodeSuccess(node.getId(), node.getType(), eventData, nodeDuration));
+                }
+
+                if ("condition".equals(node.getType())) {
+                    String selectedBranch = rawOutput.get("__selectedBranch__") instanceof String branch
+                            ? branch
+                            : null;
+                    Set<String> skipDelta = computeConditionSkips(node.getId(), selectedBranch, indexes, skippedView.get());
+                    if (!skipDelta.isEmpty()) {
+                        synchronized (skipLock) {
+                            liveSkipped.addAll(skipDelta);
+                        }
+                        return NodeOutcome.builder().output(output).skipDownstream(skipDelta).build();
+                    }
+                }
+                return NodeOutcome.of(output);
+            } catch (Exception e) {
+                log.error("节点执行失败: {}", node.getId(), e);
+                markSnapshotFailed(snapshot, e.getMessage(), (int) (System.currentTimeMillis() - nodeStartTime));
+                if (eventCallback != null) {
+                    eventCallback.accept(ExecutionEvent.nodeError(node.getId(), node.getType(), e.getMessage()));
+                }
+                throw e;
+            }
+        };
+
+        InputResolver inputResolver = (node, availableOutputs) -> {
+            Map<String, Object> resolved = resolveNodeInputForParallel(node, availableOutputs, indexes.edgesByTarget, initialInput);
+            if (!resumeState.modifiedVariables.isEmpty()) {
+                resolved = new LinkedHashMap<>(resolved);
+                resolved.putAll(resumeState.modifiedVariables);
+            }
+            return resolved;
+        };
+
+        ResumeContext resumeContext = ResumeContext.builder()
+                .startNodeId(resumeState.startNodeId)
+                .restoredNodeOutputs(resumeState.nodeOutputs)
+                .skippedNodes(resumeState.skippedNodes)
+                .initialInput(initialInput)
+                .build();
+
+        ScheduleOutcome outcome = parallelScheduler.schedule(
+                sortedNodes,
+                flattenEdges(indexes),
+                taskExecutor,
+                inputResolver,
+                resumeContext,
+                SchedulerConfig.builder().poolSize(schedulerPoolSize).build());
+
+        List<ExecutionResponse.NodeResult> nodeResults = new ArrayList<>(resumeState.restoredNodeResults);
+        for (NodeResult nodeResult : outcome.getNodeResults()) {
+            nodeResults.add(toResponseNodeResult(nodeResult));
+        }
+
+        String status = outcome.getStatus();
+        String outputData = "SUCCESS".equals(status)
+                ? toJson(stripRuntimeFields(outcome.getFinalOutput()))
+                : null;
+        return finishExecution(record, flowId, inputData, status, outcome.getErrorMessage(),
+                nodeResults, outcome.getFinalOutput(), outputData, startTime, eventCallback);
+    }
+
+    /**
+     * 计算条件节点的下游跳过增量（复用串行的 markSkippedNodes 语义，seed 为当前已跳过集合）
+     */
+    private Set<String> computeConditionSkips(String conditionNodeId,
+                                              String selectedBranch,
+                                              EdgeIndexes indexes,
+                                              Set<String> currentSkipped) {
+        Set<String> working = new HashSet<>(currentSkipped);
+        markSkippedNodes(conditionNodeId, selectedBranch, indexes.edgesBySource, indexes.edgesByTarget, working);
+        Set<String> delta = new LinkedHashSet<>(working);
+        delta.removeAll(currentSkipped);
+        return delta;
+    }
+
+    /**
+     * 并行版的节点输入解析：与串行 resolveNodeInput 一致，但回退输入返回副本，
+     * 避免多个并发节点共享同一 Map 实例。
+     */
+    private Map<String, Object> resolveNodeInputForParallel(WorkflowNode node,
+                                                            Map<String, Map<String, Object>> nodeOutputs,
+                                                            Map<String, List<WorkflowEdge>> edgesByTarget,
+                                                            Map<String, Object> fallbackInput) {
+        Map<String, Object> resolved = resolveNodeInput(node, nodeOutputs, edgesByTarget, fallbackInput);
+        if (resolved == fallbackInput) {
+            return new LinkedHashMap<>(fallbackInput);
+        }
+        return resolved;
+    }
+
+    private List<WorkflowEdge> flattenEdges(EdgeIndexes indexes) {
+        List<WorkflowEdge> edges = new ArrayList<>();
+        indexes.edgesBySource.values().forEach(edges::addAll);
+        return edges;
+    }
+
+    private ExecutionResponse.NodeResult toResponseNodeResult(NodeResult nodeResult) {
+        ExecutionResponse.NodeResult result = new ExecutionResponse.NodeResult();
+        result.setNodeId(nodeResult.getNodeId());
+        result.setNodeName(nodeResult.getNodeName());
+        result.setStatus(nodeResult.getStatus().name());
+        result.setInput(nodeResult.getInput() != null ? toJson(stripRuntimeFields(nodeResult.getInput())) : null);
+        result.setOutput(nodeResult.getOutput() != null ? toJson(nodeResult.getOutput()) : null);
+        result.setDuration(nodeResult.getDuration());
+        result.setError(nodeResult.getError());
+        return result;
     }
     
     @Override

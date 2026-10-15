@@ -7,6 +7,9 @@ import com.paiagent.dto.KnowledgeBaseRequest;
 import com.paiagent.dto.KnowledgePreviewRequest;
 import com.paiagent.dto.KnowledgeSearchRequest;
 import com.paiagent.dto.KnowledgeTextImportRequest;
+import com.paiagent.engine.rag.HybridRetriever;
+import com.paiagent.engine.rag.RagProperties;
+import com.paiagent.engine.rag.ScoredChunk;
 import com.paiagent.entity.KnowledgeBase;
 import com.paiagent.entity.KnowledgeChunk;
 import com.paiagent.entity.KnowledgeDocument;
@@ -15,6 +18,7 @@ import com.paiagent.mapper.KnowledgeBaseMapper;
 import com.paiagent.mapper.KnowledgeChunkMapper;
 import com.paiagent.mapper.KnowledgeDocumentMapper;
 import com.paiagent.mapper.KnowledgeIndexTaskMapper;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
@@ -29,6 +33,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+@Slf4j
 @Service
 public class KnowledgeBaseService {
 
@@ -41,19 +46,25 @@ public class KnowledgeBaseService {
     private final KnowledgeIndexTaskMapper knowledgeIndexTaskMapper;
     private final AgentPlanConfigResolver configResolver;
     private final VolcengineAgentPlanClient agentPlanClient;
+    private final HybridRetriever hybridRetriever;
+    private final RagProperties ragProperties;
 
     public KnowledgeBaseService(KnowledgeBaseMapper knowledgeBaseMapper,
                                 KnowledgeDocumentMapper knowledgeDocumentMapper,
                                 KnowledgeChunkMapper knowledgeChunkMapper,
                                 KnowledgeIndexTaskMapper knowledgeIndexTaskMapper,
                                 AgentPlanConfigResolver configResolver,
-                                VolcengineAgentPlanClient agentPlanClient) {
+                                VolcengineAgentPlanClient agentPlanClient,
+                                HybridRetriever hybridRetriever,
+                                RagProperties ragProperties) {
         this.knowledgeBaseMapper = knowledgeBaseMapper;
         this.knowledgeDocumentMapper = knowledgeDocumentMapper;
         this.knowledgeChunkMapper = knowledgeChunkMapper;
         this.knowledgeIndexTaskMapper = knowledgeIndexTaskMapper;
         this.configResolver = configResolver;
         this.agentPlanClient = agentPlanClient;
+        this.hybridRetriever = hybridRetriever;
+        this.ragProperties = ragProperties;
     }
 
     public List<Map<String, Object>> listKnowledgeBases() {
@@ -85,6 +96,7 @@ public class KnowledgeBaseService {
         knowledgeDocumentMapper.delete(new LambdaQueryWrapper<KnowledgeDocument>()
                 .eq(KnowledgeDocument::getKnowledgeBaseId, id));
         knowledgeBaseMapper.deleteById(id);
+        hybridRetriever.invalidate(id);
     }
 
     @Transactional
@@ -207,6 +219,7 @@ public class KnowledgeBaseService {
             task.setProgress(100);
             knowledgeIndexTaskMapper.updateById(task);
             refreshBaseStats(base.getId(), "READY");
+        hybridRetriever.invalidate(base.getId());
         } catch (Exception e) {
             document.setStatus("FAILED");
             document.setErrorMessage(e.getMessage());
@@ -215,6 +228,7 @@ public class KnowledgeBaseService {
             task.setErrorMessage(e.getMessage());
             knowledgeIndexTaskMapper.updateById(task);
             refreshBaseStats(base.getId(), "FAILED");
+            hybridRetriever.invalidate(base.getId());
         }
         return toTaskMap(task);
     }
@@ -237,6 +251,14 @@ public class KnowledgeBaseService {
 
     public Map<String, Object> searchRuntime(String knowledgeBaseId, String query, int topK, double scoreThreshold) {
         Long baseId = resolveBaseId(knowledgeBaseId);
+        if (ragProperties.isHybridEnabled()) {
+            // 迭代3：优先走 BM25+向量混合检索；整体异常时回退旧全表扫描，保证可用性
+            try {
+                return hybridRetrieve(baseId, query, topK, scoreThreshold);
+            } catch (Exception e) {
+                log.warn("Hybrid retrieve failed (base={}), fallback to legacy scan: {}", baseId, e.getMessage());
+            }
+        }
         KnowledgeBase base = requireBase(baseId);
         List<Double> queryEmbedding = List.of();
         try {
@@ -281,6 +303,7 @@ public class KnowledgeBaseService {
         document.setSourceUrl(sourceUrl);
         knowledgeDocumentMapper.updateById(document);
         refreshBaseStats(base.getId(), "READY");
+        hybridRetriever.invalidate(base.getId());
 
         Map<String, Object> output = new LinkedHashMap<>();
         output.put("knowledgeBaseId", base.getId());
@@ -310,10 +333,46 @@ public class KnowledgeBaseService {
         }
 
         Map<String, Object> output = new LinkedHashMap<>();
+        output.put("mode", "legacy");
         output.put("chunks", matches);
         output.put("citations", matches.stream().map(match -> match.get("chunkId")).toList());
         output.put("context", context.toString().trim());
         return output;
+    }
+
+    /**
+     * 迭代3 · 混合检索路径：BM25 词法路 + 向量稠密路，RRF 融合 + 重排。
+     * 输出结构与 {@link #retrieve} 兼容（chunks/citations/context），额外带 mode 标记便于观测。
+     * score 为重排分（0-1），与 scoreThreshold 同量级。
+     */
+    private Map<String, Object> hybridRetrieve(Long baseId, String query, int topK, double scoreThreshold) {
+        List<ScoredChunk> hits = hybridRetriever.retrieve(baseId, query, topK, scoreThreshold);
+        List<Map<String, Object>> matches = hits.stream().map(this::toHybridMatch).toList();
+
+        StringBuilder context = new StringBuilder();
+        for (Map<String, Object> match : matches) {
+            context.append("- ").append(match.get("content")).append("\n");
+        }
+
+        Map<String, Object> output = new LinkedHashMap<>();
+        output.put("mode", "hybrid");
+        output.put("chunks", matches);
+        output.put("citations", matches.stream().map(match -> match.get("chunkId")).toList());
+        output.put("context", context.toString().trim());
+        return output;
+    }
+
+    private Map<String, Object> toHybridMatch(ScoredChunk chunk) {
+        Map<String, Object> match = new LinkedHashMap<>();
+        match.put("chunkId", chunk.chunkId());
+        match.put("knowledgeBaseId", chunk.knowledgeBaseId());
+        match.put("documentId", chunk.documentId());
+        match.put("title", chunk.title());
+        match.put("content", chunk.content());
+        match.put("sourceUrl", chunk.sourceUrl());
+        match.put("tags", chunk.tags());
+        match.put("score", chunk.score());
+        return match;
     }
 
     private KnowledgeIndexTask createTask(Long baseId, Long documentId) {

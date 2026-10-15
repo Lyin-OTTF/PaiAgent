@@ -2,12 +2,15 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
 import com.paiagent.service.KnowledgeBaseService;
 import org.springframework.stereotype.Component;
 
 import java.util.Map;
 
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class KnowledgeRetrieveTool implements AgentTool {
 
     private final KnowledgeBaseService knowledgeBaseService;

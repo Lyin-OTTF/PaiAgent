@@ -2,6 +2,9 @@ package com.paiagent.engine.agent.tool;
 
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
+import com.paiagent.engine.agent.policy.AutonomyLevel;
+import com.paiagent.engine.agent.policy.ToolPolicy;
+import com.paiagent.engine.memory.MemoryQueryRequest;
 import com.paiagent.service.AgentMemoryService;
 import com.paiagent.service.AgentPlanConfigResolver;
 import com.paiagent.service.ResolvedAgentPlanConfig;
@@ -12,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 
 @Component
+@ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class MemoryRetrieveTool implements AgentTool {
 
     private final AgentPlanConfigResolver configResolver;
@@ -38,7 +42,7 @@ public class MemoryRetrieveTool implements AgentTool {
 
     @Override
     public String getInputSchema() {
-        return "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\"},\"topK\":{\"type\":\"number\"}},\"required\":[\"query\"]}";
+        return "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"description\":\"working/session/user/team\"},\"topK\":{\"type\":\"number\"},\"sessionId\":{\"type\":\"string\"},\"userId\":{\"type\":\"string\"},\"tenantId\":{\"type\":\"string\"}},\"required\":[\"query\"]}";
     }
 
     @Override
@@ -51,6 +55,23 @@ public class MemoryRetrieveTool implements AgentTool {
         if (config.apiUrl() != null && config.apiKey() != null && config.model() != null) {
             embedding = agentPlanClient.createEmbedding(config, query);
         }
-        return memoryService.retrieve(query, scope, List.of(), embedding, topK);
+        return memoryService.retrieve(MemoryQueryRequest.builder()
+                .query(query)
+                .scope(scope)
+                .topK(topK)
+                .queryEmbedding(embedding)
+                .sessionId(optionalText(arguments, "sessionId"))
+                .userId(optionalText(arguments, "userId"))
+                .tenantId(optionalText(arguments, "tenantId"))
+                .build());
+    }
+
+    private String optionalText(Map<String, Object> arguments, String key) {
+        Object value = arguments.get(key);
+        if (value == null) {
+            return null;
+        }
+        String text = String.valueOf(value).trim();
+        return text.isEmpty() ? null : text;
     }
 }

@@ -1,0 +1,128 @@
+package com.paiagent.engine.rag;
+
+import java.util.List;
+
+/**
+ * 迭代3 评测语料夹具：84 篇 PaiAgent 领域短文，覆盖 11 个主题。
+ * <p>内容与源码核实结论一致（DAG 串行、记忆易失、无工具权限、RAG 全表扫描、单租户、
+ * LangGraph 条件边缺失等），同主题文档共享术语形成合理干扰，使 Recall@K/MRR 落在有区分度的区间。
+ * <p>本类是评测集的一次性生成来源；修改语料后重跑 {@code EvaluationSetGeneratorTest} 重新落盘 JSON。
+ */
+final class CorpusFixture {
+
+    private CorpusFixture() {
+    }
+
+    record Doc(String topic, String title, String content) {
+    }
+
+    static List<Doc> docs() {
+        return List.of(
+                // ===== dag：DAG 引擎 =====
+                new Doc("dag", "DAG 引擎拓扑排序", "WorkflowEngine 是 PaiAgent 的核心编排引擎，执行前由 DAGParser 做拓扑排序。拓扑排序基于 Kahn 算法：不断取出入度为 0 的节点执行，若最终输出节点数少于总节点数则说明存在环。环检测使用 DFS 三色标记实现，能够在调度前拒绝非法工作流配置。"),
+                new Doc("dag", "DAG 串行执行现状", "当前 DAG 引擎采用串行执行：WorkflowEngine 主循环按拓扑序逐个执行节点，节点 N 的输出作为节点 N+1 的输入。串行模型简单可靠、日志顺序清晰，但无法利用多核并行独立分支，长工作流总耗时等于各节点耗时之和。"),
+                new Doc("dag", "DAG 条件分支节点", "DAG 引擎已支持条件分支：condition 节点根据表达式结果决定后继走向，未被选中的分支由 markSkippedNodes 标记为 SKIPPED，不参与执行。条件表达式支持引用上游节点的输出字段，是工作流实现 if-else 路由的基础能力。"),
+                new Doc("dag", "DAG 断点续跑机制", "DAG 引擎支持断点续跑：执行过程中每个节点完成时写入 execution_snapshot 快照表，记录节点状态、输入输出与执行顺序。执行失败后可通过 resumeExecution 从失败节点恢复，已成功的节点不再重复执行，避免长流程整体重跑。"),
+                new Doc("dag", "有界并行调度规划", "二期规划引入有界并行 DAG 调度：ParallelDAGScheduler 识别拓扑序中互不依赖的节点层，用有界线程池并发执行同层节点，失败传播机制会取消同层未完成任务并标记独立分支。串行开关保留，双跑结果一致性由测试保证。"),
+                new Doc("dag", "执行记录与节点结果", "每次工作流执行生成一条 execution_record，node_results 字段以 JSON 保存每个节点的输出。执行记录包含执行状态、开始结束时间与错误信息，前端 DebugDrawer 据此展示实时日志与各节点产出，是排查工作流问题的主要依据。"),
+                new Doc("dag", "DAGParser 输入校验", "DAGParser 在解析工作流配置时执行多重校验：节点 ID 唯一性、边引用的端点存在性、环路检测与孤立节点检查。解析失败会抛出带节点定位信息的异常，前端保存工作流前即可发现配置错误，避免运行时才暴露问题。"),
+                new Doc("dag", "工作流配置存储", "工作流配置以 JSON 形式存储在 workflow 表的 flow_data 字段，包含节点、边与画布视图信息。保存时前端序列化 ReactFlow 的 nodes 与 edges，后端反序列化为 WorkflowConfig，节点 data 中的配置项驱动执行器行为。"),
+
+                // ===== langgraph：LangGraph 引擎 =====
+                new Doc("langgraph", "LangGraph 引擎定位", "LangGraph4j 引擎用于复杂工作流：EngineSelector 根据 workflow 的 engineType 字段在 DAG 与 LangGraph 之间路由。LangGraph 以状态图方式表达流程，适合需要条件路由、循环与状态累积的 Agent 场景，与 DAG 的静态拓扑形成互补。"),
+                new Doc("langgraph", "GraphBuilder 现状", "当前 GraphBuilder 只调用 addEdge 添加无条件边，尚不支持条件路由。这意味着 LangGraph 引擎无法根据运行时状态选择分支，复杂 Agent 逻辑被迫改写为 DAG 或 ReAct 节点。补齐条件边是二期迭代 5 的核心内容。"),
+                new Doc("langgraph", "条件边补齐规划", "迭代 5 将引入 ConditionalRouter 与 GraphBuilder.addConditionalEdges：边附带条件函数，根据图状态动态选择后继节点。同时支持 LoopNode 带 maxIterations 上限的循环，防止 Agent 循环不收敛，并复用 execution_snapshot 实现 LangGraph 断点恢复。"),
+                new Doc("langgraph", "AsyncNodeAction 异步执行", "LangGraph 引擎使用 AsyncNodeAction 封装节点执行，节点内可发起异步调用（如 LLM 流式输出）而不阻塞图调度。状态在节点间以 GraphState 传递，节点 action 读写状态字段实现数据流转，适合 I/O 密集的 Agent 链路。"),
+                new Doc("langgraph", "Checkpoint 与状态序列化", "LangGraph 侧的 CheckpointManager 负责图状态持久化，StateSerializer 将 GraphState 序列化为 JSON。当前 DAG 已有成熟快照机制，LangGraph 断点恢复将复用 execution_snapshot 表结构，保持两套引擎的运维体验一致。"),
+                new Doc("langgraph", "两套引擎的选择建议", "选型建议：流程结构固定的批处理选 DAG，执行快、可观测性好；需要循环、条件路由、动态规划的实验性 Agent 选 LangGraph。EngineSelector 的 engineType 字段可在两种引擎间切换，同一份前端画布配置驱动不同执行语义。"),
+
+                // ===== react：ReAct Agent =====
+                new Doc("react", "ReAct Agent 节点", "ReActAgentNodeExecutor 实现自定义 ReAct 循环：推理-行动交替进行，每轮由 LLM 决定调用工具还是给出最终答案。循环内维护 trace 记录每轮 thought 与 action，token 用量逐轮累计，是平台最核心的 Agent 执行单元。"),
+                new Doc("react", "ReAct 工具调用链路", "ReAct 循环中 LLM 通过 function calling 选择工具，执行器解析参数后经 ToolGateway 执行（迭代 1 接入）。工具结果回填对话上下文进入下一轮推理，直至模型输出最终答案或达到轮次上限。网关返回 DENIED 或 PENDING_APPROVAL 时，结果以提示形式回注。"),
+                new Doc("react", "ReAct trace 与 token 统计", "ReAct 执行器记录完整 trace：每轮的推理内容、工具调用与观测结果，以及 prompt/completion token 拆分。trace 随执行记录落库，前端可展开每轮细节，token 统计用于成本观测与上下文预算控制。"),
+                new Doc("react", "轮次上限与终止条件", "ReAct 循环配置 maxIterations 防止无限循环：达到上限仍未输出最终答案时强制终止并返回当前累积结果。终止条件还包括模型主动结束、工具连续失败熔断。合理的轮次配置是 Agent 可用性与成本的平衡点。"),
+                new Doc("react", "Agent 记忆工具", "ReAct Agent 可配备 MemoryWriteTool 与 MemoryRetrieveTool：执行中把关键事实写入分层记忆，后续轮次按需召回。记忆能力由 llm_global_config 的 memory_enabled 开关控制，关闭时工具调用返回未启用提示，不影响主流程。"),
+                new Doc("react", "知识库检索工具", "KnowledgeRetrieveTool 让 ReAct Agent 在执行中检索知识库：按节点配置的 knowledgeBaseId 取 topK 相关分片拼装上下文。该工具标注 OBSERVE 只读自治等级，经 ToolGateway 放行并落审计，是 RAG 能力进入 Agent 循环的入口。"),
+
+                // ===== tool：工具系统 =====
+                new Doc("tool", "AgentTool 接口契约", "所有工具实现 AgentTool 接口：getName、getDescription、getInputSchema 与 execute。执行器通过名称索引工具，inputSchema 以 JSON Schema 描述参数，LLM 据此生成合规调用。接口统一签名是 ToolGateway 横切治理的前提。"),
+                new Doc("tool", "内置工具清单", "平台内置工具覆盖知识检索、记忆读写、联网搜索、TTS、图片与视频生成等能力，共 8 个。迭代 1 起全部加注 @ToolPolicy 声明自治等级，ReActAgentNodeExecutor 统一经网关调用，未注册工具默认按 OBSERVE 只读处理。"),
+                new Doc("tool", "MCP 工具配置", "mcp_tool_config 表管理外部 MCP 工具：stdio 传输方式、启动命令、参数与环境变量均可配置。当前平台接入火山搜索 MCP 客户端 SearchInfinityMcpClient，MCP 工具与内置工具在注册表中平权，由策略层统一治理。"),
+                new Doc("tool", "工具 schema 设计", "工具入参 schema 决定 LLM 调用质量：属性名语义化、必填项精简、描述写清取值含义。AgentTool.getInputSchema 返回 JSON Schema 字符串，ReAct 执行器将其注入系统提示，参数解析失败时以错误信息回注下一轮推理。"),
+                new Doc("tool", "工具执行上下文", "AgentToolContext 携带当前节点与工作流输入，工具可读取节点级配置（如知识库 ID、topK、阈值）。上下文让同一工具在不同节点有不同行为，无需为每个配置变体新建工具类，是配置驱动设计的落点。"),
+                new Doc("tool", "工具注册与发现", "AgentToolRegistry 收集所有 AgentTool Bean 供 ReAct 节点按名单启用。策略层 PolicyRegistry 启动时扫描全部工具 Bean 建立工具名到策略的映射，两者共同决定可用工具集与放行规则，新增工具只需实现接口并加注解。"),
+                new Doc("tool", "ERP 业务工具移植", "二期规划将启航 ERP 的 OrderTools、RefundTools、OrderActionTools 等受控业务工具移植进平台，做端到端 Agent 到网关到审计演示。启航源码仅有参考权，移植时按 com.paiagent 包结构与 Spring AI 1.0.0-M5 重写适配。"),
+                new Doc("tool", "工具返回结构约定", "工具 execute 返回 Map 结构化结果，包含数据字段与状态提示。网关执行时会在结果外裹 GatewayStatus：EXECUTED 正常返回、DENIED 附拒绝原因、PENDING_APPROVAL 附审批单号。统一返回约定让 Agent 循环可感知治理动作。"),
+
+                // ===== governance：治理（迭代1） =====
+                new Doc("governance", "五级自治等级", "AutonomyLevel 定义五级自治：OBSERVE 只读、DRAFT 草稿、EXECUTE 执行、ESCALATE 升级人工、AUTONOMOUS 全自治。等级决定工具调用是否需要人工确认，是受限自治层的核心抽象，对应简历中工具权限分级 claim。"),
+                new Doc("governance", "ToolPolicy 注解", "@ToolPolicy 注解声明工具的自治等级、是否写操作、是否幂等、作用域。启动时 PolicyRegistry 扫描所有工具 Bean 建立工具名到策略映射；无注解工具回退 OBSERVE 只读与 global 作用域，保证未知工具默认最保守。"),
+                new Doc("governance", "ToolGateway 执行网关", "ToolGateway 是工具执行唯一入口：执行前依次做跨租户校验、自治等级校验、幂等守卫，超等级调用转审批或拒绝，通过后执行并写 ActionLedger 审计。网关把权限决策从工具实现中剥离，工具本身不感知治理逻辑。"),
+                new Doc("governance", "IdempotencyGuard 幂等守卫", "IdempotencyGuard 防止写工具重复执行：同一幂等键在 TTL 内重复调用直接返回首次结果。当前为进程内内存实现，多实例部署需换 Redis 二次校验，代码注释已声明该限制，是已知工程债而非设计疏漏。"),
+                new Doc("governance", "ActionLedger 审计表", "ActionLedger 记录每次工具调用：工具名、调用方、租户、入参摘要、自治等级、动作状态与结果摘要。审计表支持按工具、状态、审批单多维查询，GovernanceController 暴露审计日志查询接口，满足可审计性要求。"),
+                new Doc("governance", "ApprovalRecord 审批流", "超自治等级的调用生成 approval_record 进入 PENDING 状态，审批人通过 GovernanceController 通过或拒绝，附审批意见。审批通过后原执行可凭断点续跑恢复，复用 execution_snapshot 机制，HITL 闭环无需新建恢复链路。"),
+                new Doc("governance", "迭代1 测试覆盖", "迭代 1 完成 19 个纯 Mockito 单元测试：策略解析、幂等守卫、审批服务与网关决策全路径覆盖，另加 3 个 Spring 上下文测试验证 Bean 装配与 DDL。测试策略坚持无数据库依赖的单测为主，上下文测试只验证装配不验证业务。"),
+                new Doc("governance", "SchemaMigrationRunner 幂等迁移", "SchemaMigrationRunner 在启动时执行幂等 DDL：建表缺失则建、缺列则加、缺索引则补，全部先查 information_schema 再执行。迭代 1 的审计审批表、迭代 2 的记忆分层列、迭代 3 的全文索引都走同一机制，老库无需手动执行 SQL。"),
+                new Doc("governance", "多租户现状", "当前平台无多租户：user 表尚未引入，AuthService 仅单 admin 账号。迭代 1 网关预留了 tenant_id 字段与跨租户校验位，二期规划 TenantContext 与租户投影补齐数据隔离，是 P2 阶段可选项。"),
+                new Doc("governance", "治理横切设计原则", "治理层设计原则：策略声明在工具上、决策在网关、状态在审计表、人工介入走审批。Agent 执行器只感知三态结果，不理解权限模型。该分层让治理能力可独立测试、独立演进，不随工具增加而改执行器。"),
+
+                // ===== memory：记忆（迭代2） =====
+                new Doc("memory", "AgentMemoryService 现状", "现有 AgentMemoryService 用 CopyOnWriteArrayList 在内存中保存记忆，进程重启即丢失，单实例部署下功能可用但无持久化。二期迭代 2 将其重构为 MySQL 存储加 Redis 会话缓存，并引入分层作用域。"),
+                new Doc("memory", "分层记忆作用域", "MemoryScope 定义四层：WORKING 工作记忆随任务生命周期、SESSION 会话级跨轮次、USER 用户级跨会话、TEAM 团队级跨成员共享。各层有不同 TTL 与检索优先级，检索时按作用域合并结果，解决记忆无限增长问题。"),
+                new Doc("memory", "记忆表结构扩展", "agent_memory 表扩展 session_id、user_id、tenant_id、importance、expires_at 与 embedding_model 列。importance 权重参与检索排序，expires_at 支持 TTL 清理，向量列为后续语义召回预留，迁移由 SchemaMigrationRunner 幂等完成。"),
+                new Doc("memory", "SensitiveDataMasker 脱敏", "敏感数据脱敏在记忆写入前执行：手机号、身份证、密钥等模式命中后掩码处理再落库，原始值不进入持久层。脱敏规则可配置，测试覆盖各类模式与边界，防止 Agent 记忆成为敏感信息泄漏面。"),
+                new Doc("memory", "记忆检索与排序", "记忆检索按作用域过滤加重要性排序：先取当前任务相关的 WORKING 与 SESSION 层，再按 importance 加权合并 USER 与 TEAM 层。排序分由时间衰减与重要度乘积决定，保证高频重要记忆优先进入上下文。"),
+                new Doc("memory", "TTL 清理策略", "过期清理采用惰性加定时双策略：检索时跳过已过期条目，定时任务批量清理超过保留期的行。清理任务记录删除数量用于观测，避免记忆表无限膨胀，同时保留 importance 高于阈值的重要记忆。"),
+
+                // ===== rag：RAG（迭代3） =====
+                new Doc("rag", "RAG 检索现状", "改造前 KnowledgeBaseService.retrieve 全表扫描：拉取知识库全部 READY 分片，逐条计算向量 cosine 与文本相关性取最大值。数据量增长后延迟线性上升，且排序信号单一，无离线指标可量化检索质量。"),
+                new Doc("rag", "BM25 词法检索路", "BM25Retriever 用 MySQL InnoDB FULLTEXT ngram 索引召回候选，应用层按标准 BM25 公式重打分：IDF 抑制常见词，词频饱和控制长文档优势，长度归一化惩罚过长分片。词法路对专有名词与精确术语查询效果稳定。"),
+                new Doc("rag", "向量稠密检索路", "DenseRetriever 用内存 HNSW 近似最近邻索引做 cosine 检索：分片 embedding 从 JSON 列加载入索引，查询向量经同一 embedding 模型生成。索引按知识库与维度分桶懒加载，写入后主动失效重建。"),
+                new Doc("rag", "HNSW 索引参数", "HnswVectorIndex 采用 M=16、efConstruction=100、efSearch=64 与层级衰减 1/ln(M)。简化取舍：邻居选择不启用多样性启发式、删除只打标记不重连。万级分片下检索延迟稳定在毫秒级，召回率经测试对照暴力索引校准。"),
+                new Doc("rag", "RRF 融合策略", "HybridRetriever 用 RRF 融合两路排名：score(d) 等于各路上 1/(k+rank) 求和，k 取 60。RRF 只依赖排名不依赖分制，天然兼容 BM25 无上界分与 cosine 有界分，避免了两路分数归一化权重难调的问题。"),
+                new Doc("rag", "Reranker 重排", "融合后 Reranker 合成 0-1 重排分：RRF 归一化分、正文查询词覆盖率、标题查询词覆盖率加权求和。覆盖率权重向长词倾斜，与分词权重规则一致。输出分与历史 cosine 阈值同量级，scoreThreshold 语义不变。"),
+                new Doc("rag", "RagEvaluator 评测指标", "RagEvaluator 计算 Recall@K 与 MRR：Recall@K 度量相关分片进入前 K 的比例，MRR 度量第一个相关结果的排名倒数。同时输出平均与 P99 检索延迟，指标口径与业界一致，可直接写进简历与回归报告。"),
+                new Doc("rag", "离线评测集", "评测集包含 130 余条查询到相关分片的标注，语料覆盖 11 个平台主题，同主题文档共享术语形成干扰。评测在内存混合检索上进行，不依赖数据库，可在 CI 中对每次检索改动做质量回归。"),
+                new Doc("rag", "知识分片策略", "知识入库按 chunkSize 800 字符、overlap 100 滑动窗口分片，标题与来源 URL 随分片保存。分片索引时逐片生成 embedding 写入 JSON 列，索引任务记录进度与错误，失败可重跑。分片粒度直接影响检索精度与上下文长度。"),
+                new Doc("rag", "混合检索降级路径", "混合检索任一环节失败自动降级：FULLTEXT 索引缺失时词法路熔断、向量模型未配置时稠密路返回空、整体异常回退旧全表扫描。降级路径由单测覆盖，保证治理与检索优化不以牺牲可用性为代价。"),
+
+                // ===== llm：LLM 接入 =====
+                new Doc("llm", "ChatClientFactory 动态客户端", "ChatClientFactory 按节点配置动态创建 Spring AI ChatClient：apiKey、baseUrl 与模型均可来自节点参数或全局配置。工厂缓存同配置客户端，避免每次执行重建连接，支持 OpenAI、DeepSeek、Qwen 等多协议端点。"),
+                new Doc("llm", "llm_global_config 全局配置", "llm_global_config 表保存各能力默认配置：语言模型、向量模型、图片模型、视频模型与记忆开关。节点未显式指定时回退全局配置，AgentPlanConfigResolver 负责合并节点覆盖与全局默认，是配置解析唯一入口。"),
+                new Doc("llm", "多模型与降级规划", "平台已支持多模型配置，二期规划补充模型降级：主模型调用失败按配置切换到备用模型，降级事件写入 trace。配合 token 统计与 trace 链路，形成可观测的模型调用体系，对应简历中多模型与降级 claim。"),
+                new Doc("llm", "embedding 调用链路", "embedding 经 VolcengineAgentPlanClient 调用 Agent Plan 的 embeddings 接口，请求体含 model 与 input，响应取 data[0].embedding。知识索引与查询向量化共用同一客户端与配置解析，保证入库与检索向量口径一致。"),
+                new Doc("llm", "AgentPlanConfigResolver 职责", "AgentPlanConfigResolver 解析 Agent Plan 能力配置：节点级 configId 优先，其次显式 agentPlanConfigId，最后全局配置。按 capability 选择对应模型字段，memory_enabled 决定记忆能力可用性，解析结果是不可变记录。"),
+                new Doc("llm", "LLM 节点执行器", "AbstractLLMNodeExecutor 封装 LLM 节点公共逻辑：解析配置、拼装提示词、调用客户端、解析响应。具体节点继承后只需定义提示词模板与输出映射，避免每个模型节点重复实现调用与错误处理逻辑。"),
+                new Doc("llm", "流式输出规划", "二期规划支持 LLM 流式输出：SSE 通道把 token 增量推送到前端 DebugDrawer，长响应体验显著改善。LangGraph 的 AsyncNodeAction 已具备异步执行能力，流式主要补齐节点执行器与 SSE 事件协议。"),
+                new Doc("llm", "模型调用 trace", "模型调用 trace 记录每次请求的模型、参数、token 用量与耗时，随执行记录落库。trace 是成本分析与质量回溯的基础数据，ReAct 每轮推理与工具调用均产生独立 trace 节点，支持逐轮展开。"),
+
+                // ===== node：节点执行器 =====
+                new Doc("node", "NodeExecutor 统一接口", "所有节点实现 NodeExecutor 接口：execute 接收 WorkflowNode 与输入 Map，返回输出 Map。工厂按节点类型获取执行器，接口统一签名让引擎无需关心节点内部实现，也是节点横向扩展的唯一约定。"),
+                new Doc("node", "Input 与 Output 节点", "InputNodeExecutor 是工作流入口，把外部输入注入执行上下文；OutputNodeExecutor 是终点，收集最终输出写入执行记录。两者结构简单但定义了工作流的数据边界，调试时可单独执行验证输入输出映射。"),
+                new Doc("node", "知识检索节点", "KnowledgeRetrieveNodeExecutor 串联知识库检索：读取节点配置的知识库 ID、topK 与阈值，调用 searchRuntime 后将分片拼装为上下文注入下游 LLM 节点。该节点是 RAG 链路在工作流中的标准用法。"),
+                new Doc("node", "知识写入节点", "KnowledgeUpsertNodeExecutor 支持工作流运行时写入知识：把文本分片入库并生成 embedding，写入后失效检索缓存。Agent 可在执行中积累知识，后续检索即可召回，实现自增强知识库。"),
+                new Doc("node", "TTS 语音节点", "TTSNodeExecutor 调用语音合成服务，把文本节点输出转换为音频 URL，前端 AudioPlayer 组件播放。节点支持音色与语速配置，输出结构包含音频地址与时长，适合播报与配音类场景。"),
+                new Doc("node", "条件节点执行器", "条件节点执行器计算表达式并输出分支结果，引擎据此标记未选中分支为 SKIPPED。表达式支持比较、逻辑运算与上游字段引用，是 DAG 内实现 if-else 与多路路由的机制，与 LangGraph 条件边互补。"),
+                new Doc("node", "图片与视频生成节点", "图片节点调用文生图接口、视频节点调用文生视频接口，输出媒体 URL 写入节点结果。两个节点的客户端按 provider 配置切换，失败时把错误信息写入节点输出，不中断整个工作流执行。"),
+                new Doc("node", "节点定义预置", "node_definition 表预置全部可用节点类型：元数据含名称、分类、输入输出 schema 与默认配置。前端 NodePanel 从节点定义动态渲染拖拽面板，新增节点类型只需插入定义记录并实现执行器。"),
+
+                // ===== skill：Skills 系统 =====
+                new Doc("skill", "Skill 声明格式", "Skill 用 YAML Frontmatter 加 Markdown 声明：frontmatter 含名称、描述、触发条件与版本，正文是详细指令。resources/skills 目录下的 SKILL.md 即 skill 定义，声明式格式让非开发人员也能维护技能库。"),
+                new Doc("skill", "三级渐进式加载", "Skills 采用三级渐进加载：摘要级只加载名称与描述供模型选择，详情级加载完整指令，参考级按需加载附带资料。三级加载控制上下文占用，技能数量增长不会线性推高 token 成本。"),
+                new Doc("skill", "SkillSelector 前端组件", "前端 SkillSelector 组件列出可用技能，用户在工作流节点上挂载。挂载后技能指令注入系统提示，模型按触发条件决定是否启用。组件支持搜索与分类过滤，技能与工作流的绑定关系随节点配置保存。"),
+                new Doc("skill", "技能与工具的区别", "技能是提示词级的指令增强，工具是代码级的能力扩展：技能教模型如何做，工具给模型可调用的函数。两者互补，一个节点可同时挂载多个技能与多个工具，ReAct 循环中由模型自行组合。"),
+                new Doc("skill", "技能版本管理规划", "二期规划补充技能版本管理：技能变更留痕、按版本回滚、灰度启用。当前技能文件即真相来源，版本管理依赖文件系统与发布流程，规划引入后可与审计体系对齐。"),
+                new Doc("skill", "技能加载缓存", "技能加载结果按版本缓存，文件变更通过 devtools 重启或手动刷新生效。三级加载的摘要清单在启动时构建，详情内容首次使用时按需读取并缓存，平衡启动速度与运行时响应。"),
+
+                // ===== ops：工程运维 =====
+                new Doc("ops", "JWT 认证体系", "平台使用 JWT 双令牌认证：access token 两小时、refresh token 七天，Redis 保存 refresh 令牌支持吊销。AuthInterceptor 校验 Authorization 头，未携带或过期的请求返回 401，前端拦截后跳转登录页。"),
+                new Doc("ops", "数据库初始化", "schema.sql 提供全量建表脚本，本地开发用 mysql 导入后即可启动。SchemaMigrationRunner 负责老库幂等升级，两条路径覆盖全新安装与存量升级，DDL 变更只需同时维护两处。"),
+                new Doc("ops", "环境变量配置", "后端配置通过 .env 与环境变量注入：MYSQL_PASSWORD、JWT_SECRET、APP_AUTH_DEFAULT_USERNAME 等必填项有默认值。application.yml 的 spring.config.import 支持可选 .env 文件，本地不配也能以默认值启动。"),
+                new Doc("ops", "Swagger API 文档", "SpringDoc 提供在线 API 文档：开发环境访问 swagger-ui.html 可交互调试全部 REST 接口。接口注解包含中文描述与示例，AuthInterceptor 放行文档路径，联调阶段前后端以文档为契约。"),
+                new Doc("ops", "MinIO 文件存储", "MinIO 承载媒体文件存储：TTS 音频、生成图片与视频均上传至对象存储，数据库只保存访问 URL。配置含 endpoint、密钥与桶名，publicUrl 控制外网访问地址，本地未启动时相关功能降级。"),
+                new Doc("ops", "前端技术栈", "前端 React 18 加 TypeScript 加 Vite：ReactFlow 画布、Ant Design 组件、Tailwind 样式、Zustand 状态管理。请求层封装 axios 实例自动附带 JWT，开发环境通过代理转发到 8084 端口后端。"),
+                new Doc("ops", "构建与测试命令", "后端 mvnw 负责构建与测试：spring-boot:run 启动、clean package 打包、test 跑全量单测。前端 npm run build 先做 TypeScript 检查再 Vite 构建，提交前跑 lint 保证代码风格一致。"),
+                new Doc("ops", "DebugDrawer 调试面板", "DebugDrawer 是执行调试面板：展示实时日志、节点状态时间线与输出数据，支持展开 ReAct 每轮 trace。面板通过 SSE 接收执行进度，失败节点高亮并展示错误详情，是定位工作流问题的主界面。")
+        );
+    }
+}

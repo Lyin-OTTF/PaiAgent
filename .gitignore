@@ -23,8 +23,12 @@ frontend/.vite/
 .env.local
 .env.*.local
 
+# 本地工作区数据（记忆/看板，不进入仓库）
+.workbuddy/
+
 # 日志
 *.log
+*.log.err
 logs/
 
 # 系统文件

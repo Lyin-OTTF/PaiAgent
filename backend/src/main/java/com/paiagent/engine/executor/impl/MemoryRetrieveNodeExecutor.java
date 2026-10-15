@@ -1,5 +1,6 @@
 package com.paiagent.engine.executor.impl;
 
+import com.paiagent.engine.memory.MemoryQueryRequest;
 import com.paiagent.engine.model.WorkflowNode;
 import com.paiagent.service.AgentMemoryService;
 import com.paiagent.service.AgentPlanConfigResolver;
@@ -38,13 +39,16 @@ public class MemoryRetrieveNodeExecutor extends AbstractAgentPlanNodeExecutor {
             embedding = agentPlanClient.createEmbedding(config, query);
         }
 
-        Map<String, Object> output = memoryService.retrieve(
-                query,
-                stringData(node, "scope", "workflow"),
-                memoryService.splitTags(stringData(node, "tags", "")),
-                embedding,
-                intData(node, "topK", 5)
-        );
+        Map<String, Object> output = memoryService.retrieve(MemoryQueryRequest.builder()
+                .query(query)
+                .scope(stringData(node, "scope", "workflow"))
+                .tags(memoryService.splitTags(stringData(node, "tags", "")))
+                .queryEmbedding(embedding)
+                .topK(intData(node, "topK", 5))
+                .sessionId(stringData(node, "sessionId", null))
+                .userId(stringData(node, "userId", null))
+                .tenantId(stringData(node, "tenantId", null))
+                .build());
         output.put("output", output.get("context"));
         return output;
     }
