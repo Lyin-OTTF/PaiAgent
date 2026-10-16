@@ -1,6 +1,7 @@
 package com.paiagent.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.paiagent.engine.WorkflowConfigParser;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
@@ -121,6 +122,13 @@ public class HitlResumeService {
             log.info("HITL 补执行跳过：已处理过（resumeStatus={}）: {}", record.getResumeStatus(), approvalId);
             return;
         }
+        // 迭代7 B1：先原子抢占补执行权（resumeStatus: NULL → RESUMING）再动手。
+        // 修复前幂等只靠「结尾写 SUCCEEDED」：若工具已补执行成功、状态尚未写回时进程崩溃，
+        // 下次触发会读到 resumeStatus=NULL 而重放同一次工具调用（重复副作用）。
+        if (!claimResume(record)) {
+            log.info("HITL 补执行跳过：并发抢占失败，已被其它执行者处理: {}", approvalId);
+            return;
+        }
         if (record.getSuspendContext() == null || record.getSuspendContext().isBlank()) {
             // 无挂起上下文：非 ReAct 审批或历史数据，保持旧审计闭环行为
             markSkipped(record, "无挂起上下文（非 ReAct 审批或历史数据），仅审计闭环");
@@ -175,8 +183,7 @@ public class HitlResumeService {
     }
 
     /** 从工作流定义解析挂起节点（工作流被删/节点被删时给出明确失败原因）。 */
-    private WorkflowNode resolveNode(HitlSuspendContext snapshot) {
-        if (snapshot.workflowId() == null) {
+    private WorkflowNode resolveNode(HitlSuspendContext snapshot) {        if (snapshot.workflowId() == null) {
             throw new IllegalStateException("挂起上下文缺少 workflowId");
         }
         Workflow workflow = workflowService.getById(snapshot.workflowId());
@@ -216,6 +223,10 @@ public class HitlResumeService {
     /** 静态工具方法（包级可见）：替换 nodeResults 中指定节点的 output。 */
     static String amendNodeResults(String nodeResultsJson, String nodeId, Map<String, Object> finalOutput) {
         List<Object> parsed = JSON.parseArray(nodeResultsJson);
+        // 迭代7 B2：parseArray 对非 JSON 数组返回 null，直接 new ArrayList<>(null) 会 NPE
+        if (parsed == null) {
+            throw new IllegalStateException("nodeResults 不是合法的 JSON 数组，无法回写");
+        }
         List<Object> amended = new ArrayList<>(parsed);
         boolean replaced = false;
         for (Object item : amended) {
@@ -230,6 +241,29 @@ public class HitlResumeService {
             throw new IllegalStateException("nodeResults 中未找到节点: " + nodeId);
         }
         return JSON.toJSONString(amended);
+    }
+
+    /** 补执行中的占位状态（迭代7 B1 的抢占标记）。 */
+    static final String RESUMING_STATUS = "RESUMING";
+
+    /**
+     * 原子抢占补执行权（迭代7 B1）。
+     *
+     * <p>条件更新 {@code resumeStatus: NULL → RESUMING}，影响行数 1 表示本次抢到；
+     * 0 表示已被其它执行者处理（含并发补执行）。这样即便出现「工具已执行成功、
+     * 状态尚未写回」时进程崩溃，重启后的重放也会因状态非 NULL 被拦下，
+     * 不会重复产生副作用。
+     */
+    private boolean claimResume(ApprovalRecord record) {
+        int updated = approvalRecordMapper.update(null, new LambdaUpdateWrapper<ApprovalRecord>()
+                .eq(ApprovalRecord::getId, record.getId())
+                .isNull(ApprovalRecord::getResumeStatus)
+                .set(ApprovalRecord::getResumeStatus, RESUMING_STATUS));
+        if (updated == 0) {
+            return false;
+        }
+        record.setResumeStatus(RESUMING_STATUS);
+        return true;
     }
 
     private void markSkipped(ApprovalRecord record, String reason) {

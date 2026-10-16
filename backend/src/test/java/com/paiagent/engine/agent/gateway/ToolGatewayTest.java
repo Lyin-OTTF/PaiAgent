@@ -195,7 +195,8 @@ class ToolGatewayTest {
     }
 
     // ------------------------------------------------------------------
-    // 迭代6：预授权穿透（HITL resume 的网关侧行为）
+    // 迭代6/7：预授权穿透（HITL resume 的网关侧行为）
+    // 迭代7 A6：判定改为「审批单 + 工具 + 租户」三者匹配
     // ------------------------------------------------------------------
 
     private ToolExecutionContext preApprovedCtx(Long approvalId) {
@@ -210,7 +211,7 @@ class ToolGatewayTest {
         IdempotencyGuard guard = guard();
         ActionLedgerService ledger = mock(ActionLedgerService.class);
         ApprovalService approval = mock(ApprovalService.class);
-        when(approval.isApproved(42L)).thenReturn(true);
+        when(approval.isApprovedFor(42L, "t7", "global")).thenReturn(true);
 
         FakeTool tool = new FakeTool("t7", Map.of("v", "ok"));
         ToolGateway gw = gateway(pr, guard, ledger, approval);
@@ -234,7 +235,7 @@ class ToolGatewayTest {
         ActionLedgerService ledger = mock(ActionLedgerService.class);
         ApprovalService approval = mock(ApprovalService.class);
         // 审批单存在但已被拒绝/尚未获批：不放行，转新审批
-        when(approval.isApproved(99L)).thenReturn(false);
+        when(approval.isApprovedFor(99L, "t8", "global")).thenReturn(false);
         when(approval.create(any())).thenAnswer(inv -> {
             ApprovalRecord r = inv.getArgument(0);
             r.setId(100L);
@@ -250,6 +251,36 @@ class ToolGatewayTest {
         assertEquals(100L, result.approvalId());
         assertEquals(0, tool.calls.get());
         verify(approval).create(any());
+    }
+
+    /**
+     * 迭代7 A6：预授权必须「审批单 + 工具 + 租户」三者匹配——
+     * 网关需把本次调用的工具名与租户交给绑定校验，而不是只查审批状态
+     * （修复前任意已批准单号可为任意工具做穿透）。
+     */
+    @Test
+    void shouldPassToolAndTenantToApprovalBindingCheck() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t10")).thenReturn(new ResolvedPolicy(AutonomyLevel.ESCALATE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        when(approval.isApprovedFor(any(), any(), any())).thenReturn(false);
+        when(approval.create(any())).thenAnswer(inv -> {
+            ApprovalRecord r = inv.getArgument(0);
+            r.setId(200L);
+            return r;
+        });
+
+        FakeTool tool = new FakeTool("t10", Map.of());
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        ToolGatewayResult result = gw.execute(tool, Map.of(), preApprovedCtx(55L), new AgentToolContext(null, Map.of()));
+
+        // 断言网关把 (审批单, 工具名, 租户) 一并交给绑定校验
+        verify(approval).isApprovedFor(55L, "t10", "global");
+        assertEquals(GatewayStatus.PENDING_APPROVAL, result.status());
+        assertEquals(0, tool.calls.get());
     }
 
     @Test

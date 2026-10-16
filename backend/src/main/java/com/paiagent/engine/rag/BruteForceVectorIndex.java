@@ -18,8 +18,11 @@ public class BruteForceVectorIndex implements VectorIndex {
 
     private final Map<Long, float[]> vectors = new LinkedHashMap<>();
 
+    // 迭代7（报告低危项）：本类作为对照实现同样可能被并发访问，
+    // 而 LinkedHashMap 非线程安全（并发 put/get 可能结构损坏或死循环），故统一加锁。
+
     @Override
-    public void upsert(Long id, float[] vector) {
+    public synchronized void upsert(Long id, float[] vector) {
         if (id == null || vector == null || vector.length == 0) {
             return;
         }
@@ -27,23 +30,24 @@ public class BruteForceVectorIndex implements VectorIndex {
     }
 
     @Override
-    public void remove(Long id) {
+    public synchronized void remove(Long id) {
         vectors.remove(id);
     }
 
     @Override
-    public boolean contains(Long id) {
+    public synchronized boolean contains(Long id) {
         return vectors.containsKey(id);
     }
 
     @Override
-    public int size() {
+    public synchronized int size() {
         return vectors.size();
     }
 
     @Override
-    public List<ScoredVector> search(float[] query, int topK) {
-        if (topK <= 0) {
+    public synchronized List<ScoredVector> search(float[] query, int topK) {
+        // 迭代7（报告低危项）：补 query 空值防御（normalize(null) 会 NPE）
+        if (query == null || query.length == 0 || topK <= 0) {
             return List.of();
         }
         float[] q = normalize(query);

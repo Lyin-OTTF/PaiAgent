@@ -38,6 +38,12 @@ public class Workflow {
     private String engineType;
     
     /**
+     * 资源归属（迭代7 · 评审报告 A1）：登录用户名。
+     * 列表/详情/执行入口均按此隔离，防止跨用户访问；系统内部创建的资源归 "system"。
+     */
+    private String owner;
+    
+    /**
      * 创建时间
      */
     @TableField(fill = FieldFill.INSERT)

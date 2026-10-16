@@ -29,6 +29,9 @@ public class McpToolConfigService extends ServiceImpl<McpToolConfigMapper, McpTo
             "git+https://github.com/volcengine/mcp-server#subdirectory=server/mcp_server_askecho_search_infinity";
     public static final String SEARCH_INFINITY_COMMAND = "mcp-server-askecho-search-infinity";
 
+    /** 密钥类环境变量下发时的掩码串（与回写识别共用，避免两处字面量漂移）。 */
+    private static final String MASKED_ENV_VALUE = "******";
+
     private final SearchInfinityMcpClient searchInfinityMcpClient;
 
     public McpToolConfigService(SearchInfinityMcpClient searchInfinityMcpClient) {
@@ -76,6 +79,7 @@ public class McpToolConfigService extends ServiceImpl<McpToolConfigMapper, McpTo
     @Transactional
     public Map<String, Object> updateConfig(Long id, McpToolConfigRequest request) {
         McpToolConfig config = requireConfig(id);
+        restoreMaskedEnv(config, request);
         applyRequest(config, request);
         this.updateById(config);
         return toSafeMap(config);
@@ -177,8 +181,37 @@ public class McpToolConfigService extends ServiceImpl<McpToolConfigMapper, McpTo
 
     private Map<String, String> maskEnv(Map<String, String> env) {
         Map<String, String> masked = new LinkedHashMap<>();
-        env.forEach((key, value) -> masked.put(key, isSecretKey(key) ? "******" : value));
+        env.forEach((key, value) -> masked.put(key, isSecretKey(key) ? MASKED_ENV_VALUE : value));
         return masked;
+    }
+
+    /**
+     * 密文回写保护（迭代7 · 评审报告 A3 配套）：{@link #toSafeMap} 下发的密钥类环境变量是
+     * {@code ******}，前端未修改时会原样回传；若直接落库，会把真实密钥覆盖成掩码串，
+     * 工具下次启动即认证失败且界面难以察觉。此处对「值等于掩码串 + 键为密钥类 + 库中确有同名键」
+     * 的组合用原值恢复，其余原样保留；新增场景无原值可恢复，不做处理。
+     */
+    private void restoreMaskedEnv(McpToolConfig stored, McpToolConfigRequest request) {
+        Map<String, String> submitted = request.getEnv();
+        if (submitted == null || submitted.isEmpty()) {
+            return;
+        }
+        Map<String, String> existing = parseEnv(stored);
+        if (existing.isEmpty()) {
+            return;
+        }
+        Map<String, String> restored = new LinkedHashMap<>(submitted);
+        boolean changed = false;
+        for (Map.Entry<String, String> entry : submitted.entrySet()) {
+            String key = entry.getKey();
+            if (MASKED_ENV_VALUE.equals(entry.getValue()) && isSecretKey(key) && existing.containsKey(key)) {
+                restored.put(key, existing.get(key));
+                changed = true;
+            }
+        }
+        if (changed) {
+            request.setEnv(restored);
+        }
     }
 
     private boolean isSecretKey(String key) {

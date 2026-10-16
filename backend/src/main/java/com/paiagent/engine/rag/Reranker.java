@@ -35,9 +35,27 @@ public class Reranker {
 
     public Reranker(ChineseAnalyzer analyzer, double rrfWeight, double coverageWeight, double titleWeight) {
         this.analyzer = analyzer;
-        this.rrfWeight = rrfWeight;
-        this.coverageWeight = coverageWeight;
-        this.titleWeight = titleWeight;
+        // 迭代7（报告低危项）：权重归一化——配置之和不为 1 时，加权和会被 clamp01 截断
+        // （或整体偏小），使最终分与「scoreThreshold 默认 0.2」的既定语义偏离。
+        double[] normalized = normalizeWeights(rrfWeight, coverageWeight, titleWeight);
+        this.rrfWeight = normalized[0];
+        this.coverageWeight = normalized[1];
+        this.titleWeight = normalized[2];
+    }
+
+    /**
+     * 归一化三元权重：负数按 0 处理；三者全为 0（或非法）时回落默认权重。
+     * 归一化后三者之和恒为 1，加权和天然落在 [0,1]，clamp01 只做兜底。
+     */
+    private static double[] normalizeWeights(double rrf, double coverage, double title) {
+        double r = Math.max(0, rrf);
+        double c = Math.max(0, coverage);
+        double t = Math.max(0, title);
+        double sum = r + c + t;
+        if (sum <= 0) {
+            return new double[]{DEFAULT_RRF_WEIGHT, DEFAULT_COVERAGE_WEIGHT, DEFAULT_TITLE_WEIGHT};
+        }
+        return new double[]{r / sum, c / sum, t / sum};
     }
 
     /**

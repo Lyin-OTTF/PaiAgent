@@ -126,6 +126,97 @@ class ConditionBranchRoutingTest {
         assertEquals(2, response.getNodeResults().size());
     }
 
+    /**
+     * 迭代7（双引擎对齐 · 多源）：多个无入边的源节点并存时，后续源节点必须拿到
+     * <b>原始输入</b>，而不是「前一个源节点的输出」。
+     * 修复前串行路径把可变的 currentInput 当兜底输入，导致源节点之间发生串味。
+     */
+    @Test
+    void multiSourceNodesEachReceiveInitialInput() {
+        registerExecutors(new SimpleOutputNodeExecutor("srcA"), new SimpleOutputNodeExecutor("srcB"));
+
+        List<WorkflowNode> nodes = new ArrayList<>();
+        nodes.add(createNode("node-srcA", "srcA", null));
+        nodes.add(createNode("node-srcB", "srcB", null));
+
+        WorkflowConfig config = new WorkflowConfig();
+        config.setNodes(nodes);
+        config.setEdges(new ArrayList<>());
+
+        Workflow workflow = new Workflow();
+        workflow.setId(10L);
+        workflow.setFlowData(JSON.toJSONString(config));
+
+        ExecutionResponse response = engine.execute(workflow, "seed");
+
+        assertEquals("SUCCESS", response.getStatus());
+        ExecutionResponse.NodeResult srcB = byNodeId(response, "node-srcB");
+        assertNotNull(srcB, "源 B 应被执行");
+        assertFalse(srcB.getInput().contains("executedBy"),
+                "源 B 的输入不应携带源 A 的输出标记（修复前会把上一个源节点的输出串给它）");
+        assertTrue(srcB.getInput().contains("\"input\":\"seed\""), "源 B 应拿到原始输入");
+    }
+
+    /**
+     * 迭代7（双引擎对齐 · 条件空分支）：条件节点未回传 {@code __selectedBranch__} 时
+     * 应按 default 分支处理，与 LangGraph 的 {@code resolveBranch} 语义一致。
+     * 修复前 null 会让每条出边都落入 inactive（全部下游被跳过），两引擎行为相反。
+     */
+    @Test
+    void conditionWithoutBranchFallsBackToDefault() {
+        registerExecutors(new NoBranchConditionExecutor(), new SimpleOutputNodeExecutor("condDefault"));
+
+        List<WorkflowNode> nodes = new ArrayList<>();
+        nodes.add(createNode("node-input", "input", null));
+        nodes.add(createNode("node-condition", "condition", null));
+        nodes.add(createNode("node-default", "condDefault", null));
+        nodes.add(createNode("node-branchA", "branchA", null));
+
+        List<WorkflowEdge> edges = new ArrayList<>();
+        edges.add(createEdge("e1", "node-input", "node-condition", null, null));
+        // default 分支：出边不带 sourceHandle
+        edges.add(createEdge("e2", "node-condition", "node-default", null, null));
+        // 具名分支：明确未被选中
+        edges.add(createEdge("e3", "node-condition", "node-branchA", "condition_0", null));
+
+        WorkflowConfig config = new WorkflowConfig();
+        config.setNodes(nodes);
+        config.setEdges(edges);
+
+        Workflow workflow = new Workflow();
+        workflow.setId(11L);
+        workflow.setFlowData(JSON.toJSONString(config));
+
+        ExecutionResponse response = engine.execute(workflow, "seed");
+
+        assertEquals("SUCCESS", response.getStatus());
+        assertNotNull(byNodeId(response, "node-default"),
+                "缺少分支信息时应回落到 default（修复前所有下游都会被跳过）");
+        assertNull(byNodeId(response, "node-branchA"), "具名分支未被选中，仍应跳过");
+    }
+
+    // --- Helpers ---
+
+    /** 用基础执行器集合 + 额外执行器重建工厂（同名类型以后者为准）。 */
+    private void registerExecutors(NodeExecutor... extra) {
+        List<NodeExecutor> executors = new ArrayList<>(List.of(
+                new InputNodeExecutor(),
+                new ConditionNodeExecutor(),
+                new MockLlmNodeExecutor(),
+                new SimpleOutputNodeExecutor("branchA"),
+                new SimpleOutputNodeExecutor("branchB"),
+                new SimpleOutputNodeExecutor("branchDefault")));
+        executors.addAll(List.of(extra));
+        ReflectionTestUtils.setField(engine, "executorFactory", new NodeExecutorFactory(executors));
+    }
+
+    private ExecutionResponse.NodeResult byNodeId(ExecutionResponse response, String nodeId) {
+        return response.getNodeResults().stream()
+                .filter(result -> nodeId.equals(result.getNodeId()))
+                .findFirst()
+                .orElse(null);
+    }
+
     // --- Workflow Builders ---
 
     private Workflow buildConditionalWorkflow() {
@@ -278,6 +369,23 @@ class ConditionBranchRoutingTest {
         @Override
         public String getSupportedNodeType() {
             return "mockLlm";
+        }
+    }
+
+    /**
+     * 模拟「条件节点未回传分支」的异常情形（迭代7 空分支容错的测试替身）。
+     * 类型仍为 {@code condition}，因此会覆盖默认的 ConditionNodeExecutor。
+     */
+    static class NoBranchConditionExecutor implements NodeExecutor {
+        @Override
+        public Map<String, Object> execute(WorkflowNode node, Map<String, Object> input) {
+            // 故意不写入 __selectedBranch__
+            return new HashMap<>(input);
+        }
+
+        @Override
+        public String getSupportedNodeType() {
+            return "condition";
         }
     }
 

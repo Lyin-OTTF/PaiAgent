@@ -3,6 +3,7 @@ package com.paiagent.controller;
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.paiagent.common.Result;
+import com.paiagent.common.UserContext;
 import com.paiagent.dto.ExecutionEvent;
 import com.paiagent.dto.ExecutionRequest;
 import com.paiagent.dto.ExecutionResponse;
@@ -12,6 +13,7 @@ import com.paiagent.dto.ResumeExecutionRequest;
 import com.paiagent.engine.EngineSelector;
 import com.paiagent.engine.WorkflowExecutor;
 import com.paiagent.engine.WorkflowEngine;
+import com.paiagent.engine.agent.tenant.TenantContext;
 import com.paiagent.engine.langgraph.LangGraphWorkflowEngine;
 import com.paiagent.entity.ExecutionRecord;
 import com.paiagent.entity.ExecutionSnapshot;
@@ -23,6 +25,7 @@ import com.paiagent.mapper.ExecutionVariableMapper;
 import com.paiagent.service.WorkflowService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import jakarta.annotation.PreDestroy;
 import jakarta.validation.Valid;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -35,7 +38,13 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
 @Slf4j
@@ -60,13 +69,41 @@ public class ExecutionController {
     private ExecutionVariableMapper executionVariableMapper;
     
     private final Map<String, SseEmitter> emitters = new ConcurrentHashMap<>();
+
+    /**
+     * SSE 执行线程池（迭代7 · 中危修复）：替代原先「每请求一个裸线程」。
+     * 有界线程数（上限 16）+ 有界队列（64）+ CallerRuns 兜底，避免高并发下线程耗尽；
+     * 守护线程不阻塞 JVM 退出，固定线程名便于排查。
+     */
+    private final ExecutorService sseExecutor = new ThreadPoolExecutor(
+            4, 16, 60L, TimeUnit.SECONDS,
+            new ArrayBlockingQueue<>(64),
+            new ThreadFactory() {
+                private final AtomicInteger seq = new AtomicInteger(1);
+
+                @Override
+                public Thread newThread(Runnable r) {
+                    Thread thread = new Thread(r, "sse-exec-" + seq.getAndIncrement());
+                    thread.setDaemon(true);
+                    return thread;
+                }
+            },
+            new ThreadPoolExecutor.CallerRunsPolicy());
+
+    @PreDestroy
+    public void shutdownSseExecutor() {
+        sseExecutor.shutdown();
+    }
     
     @Operation(summary = "执行工作流")
     @PostMapping("/{id}/execute")
     public Result<ExecutionResponse> executeWorkflow(@PathVariable Long id, @Valid @RequestBody ExecutionRequest request) {
-        Workflow workflow = workflowService.getById(id);
-        if (workflow == null) {
-            return Result.error("工作流不存在");
+        Workflow workflow;
+        try {
+            // 迭代7 A1：执行入口同样按归属校验，避免「列表看不到却能按 id 执行」
+            workflow = workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            return Result.error(e.getMessage());
         }
         
         try {
@@ -82,9 +119,11 @@ public class ExecutionController {
     @Operation(summary = "获取工作流最近一次执行记录")
     @GetMapping("/{id}/executions/latest")
     public Result<ExecutionResponse> getLatestExecution(@PathVariable Long id) {
-        Workflow workflow = workflowService.getById(id);
-        if (workflow == null) {
-            return Result.error("工作流不存在");
+        try {
+            // 迭代7 A1：最近执行记录同样受归属保护
+            workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            return Result.error(e.getMessage());
         }
 
         LambdaQueryWrapper<ExecutionRecord> wrapper = new LambdaQueryWrapper<>();
@@ -147,9 +186,12 @@ public class ExecutionController {
     public Result<ExecutionResponse> resumeExecution(@PathVariable Long id,
                                                      @PathVariable Long executionId,
                                                      @RequestBody(required = false) ResumeExecutionRequest request) {
-        Workflow workflow = workflowService.getById(id);
-        if (workflow == null) {
-            return Result.error("工作流不存在");
+        Workflow workflow;
+        try {
+            // 迭代7 A1：续跑入口同样按归属校验
+            workflow = workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            return Result.error(e.getMessage());
         }
 
         try {
@@ -192,35 +234,50 @@ public class ExecutionController {
             }
         };
         
-        new Thread(() -> {
+        // 迭代7：归属校验与上下文快照必须在【请求线程】内完成——
+        // 执行线程没有 HTTP 上下文（ThreadLocal 不继承），若把校验放进子线程，
+        // owner 会退回 system 导致误判「无权访问」。
+        Workflow workflow;
+        try {
+            workflow = workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            sendStreamError(emitter, e.getMessage());
+            return emitter;
+        }
+        String owner = UserContext.currentOwner();
+        String tenantId = TenantContext.getCurrentOrDefault("global");
+        
+        // 迭代7：有界线程池替代裸线程；显式恢复用户/租户上下文，执行完清理防串扰
+        sseExecutor.execute(() -> {
+            UserContext.setCurrent(owner);
+            TenantContext.setCurrent(tenantId);
             try {
-                Workflow workflow = workflowService.getById(id);
-                if (workflow == null) {
-                    emitter.send(SseEmitter.event()
-                            .name("ERROR")
-                            .data(ExecutionEvent.workflowComplete("FAILED", "工作流不存在", 0)));
-                    emitter.complete();
-                    return;
-                }
-                
                 // 使用引擎选择器选择合适的执行引擎
                 WorkflowExecutor executor = engineSelector.selectEngine(workflow);
                 executor.executeWithCallback(workflow, inputData, eventCallback);
                 emitter.complete();
             } catch (Exception e) {
                 log.error("工作流执行失败", e);
-                try {
-                    emitter.send(SseEmitter.event()
-                            .name("ERROR")
-                            .data(ExecutionEvent.workflowComplete("FAILED", e.getMessage(), 0)));
-                } catch (IOException ex) {
-                    log.error("发送错误事件失败", ex);
-                }
-                emitter.complete();
+                sendStreamError(emitter, e.getMessage());
+            } finally {
+                UserContext.clear();
+                TenantContext.clear();
             }
-        }).start();
+        });
         
         return emitter;
+    }
+
+    /** 向 SSE 通道推送一条失败事件并结束（迭代7：抽公共方法，消除重复 try-catch）。 */
+    private void sendStreamError(SseEmitter emitter, String message) {
+        try {
+            emitter.send(SseEmitter.event()
+                    .name("ERROR")
+                    .data(ExecutionEvent.workflowComplete("FAILED", message, 0)));
+        } catch (IOException ex) {
+            log.error("发送错误事件失败", ex);
+        }
+        emitter.complete();
     }
 
     private List<ExecutionResponse.NodeResult> parseNodeResults(String nodeResults) {

@@ -4,7 +4,6 @@ import com.paiagent.dto.ExecutionEvent;
 import com.paiagent.engine.executor.NodeExecutor;
 import com.paiagent.engine.executor.NodeExecutorFactory;
 import com.paiagent.engine.langgraph.NodeExecutionException;
-import com.paiagent.engine.langgraph.WorkflowState;
 import com.paiagent.engine.model.WorkflowNode;
 import lombok.extern.slf4j.Slf4j;
 import org.bsc.langgraph4j.action.AsyncNodeAction;

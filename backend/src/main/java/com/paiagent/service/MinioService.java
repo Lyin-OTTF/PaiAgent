@@ -1,5 +1,6 @@
 package com.paiagent.service;
 
+import com.paiagent.common.UrlSafetyValidator;
 import com.paiagent.config.MinioConfig;
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
@@ -11,11 +12,18 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.net.URL;
+import java.net.HttpURLConnection;
+import java.net.URI;
 
 @Slf4j
 @Service
 public class MinioService {
+
+    /** 连接超时（毫秒）。 */
+    private static final int CONNECT_TIMEOUT_MS = 5000;
+
+    /** 读取超时（毫秒）：转存大文件时给足时间。 */
+    private static final int READ_TIMEOUT_MS = 30000;
     
     @Autowired
     private MinioClient minioClient;
@@ -69,19 +77,28 @@ public class MinioService {
     }
     
     /**
-     * 从 URL 下载文件并上传到 MinIO
-     * @param fileUrl 文件 URL
-     * @param objectName 对象名称
-     * @param contentType 文件类型
-     * @return MinIO 公共 URL
+     * 从 URL 下载文件并上传到 MinIO。
+     *
+     * <p>迭代7（评审报告 A4 · 同类修复）：转存来源同样是用户/模型可控的 URL，
+     * 补齐与 {@code WebFetchNodeExecutor} 同级的防护——协议与内网地址校验、
+     * 连接/读取超时、不自动跟随重定向；同时修掉原先「两次 {@code openConnection()}
+     * 导致内容长度可能取自另一条连接」的问题。
      */
     public String uploadFromUrl(String fileUrl, String objectName, String contentType) throws Exception {
         log.info("从 URL 下载文件: {}", fileUrl);
-        
-        URL url = new URL(fileUrl);
-        try (InputStream inputStream = url.openStream()) {
-            long size = url.openConnection().getContentLengthLong();
-            return uploadFile(objectName, inputStream, contentType, size);
+        UrlSafetyValidator.assertSafeOutbound(fileUrl);
+
+        HttpURLConnection connection = (HttpURLConnection) URI.create(fileUrl.trim()).toURL().openConnection();
+        try {
+            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            connection.setReadTimeout(READ_TIMEOUT_MS);
+            connection.setInstanceFollowRedirects(false);
+            long size = connection.getContentLengthLong();
+            try (InputStream inputStream = connection.getInputStream()) {
+                return uploadFile(objectName, inputStream, contentType, size);
+            }
+        } finally {
+            connection.disconnect();
         }
     }
     

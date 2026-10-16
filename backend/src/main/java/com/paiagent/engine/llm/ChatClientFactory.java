@@ -3,7 +3,6 @@ package com.paiagent.engine.llm;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
-import org.springframework.ai.model.function.FunctionCallback;
 import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
@@ -39,32 +38,29 @@ public class ChatClientFactory {
      * @param temperature 温度参数
      * @return ChatClient实例
      */
-    public ChatClient createClient(String provider, String apiUrl, String apiKey,
-                                   String model, Double temperature) {
-        return createClientWithFunctions(provider, apiUrl, apiKey, model, temperature, List.of());
-    }
-
     /**
-     * 创建带 Function Calling 支持的 ChatClient
+     * 根据提供商和配置创建ChatClient。
+     *
+     * <p>迭代7（死代码清理）：原先另有一个 {@code createClientWithFunctions} 重载，
+     * 但没有任何调用方传入非空函数列表（Skill 的能力披露已改为把 references
+     * 直接打包进系统提示词），其函数注册分支永久不可达，故整体移除。
      *
      * @param provider    提供商标识 (openai/deepseek/qwen/step/zhipu/ai_ping/apifree)
      * @param apiUrl      API端点URL
      * @param apiKey      API密钥
      * @param model       模型名称
      * @param temperature 温度参数
-     * @param functions   函数回调列表
      * @return ChatClient实例
      */
-    public ChatClient createClientWithFunctions(String provider, String apiUrl, String apiKey,
-                                                 String model, Double temperature,
-                                                 List<FunctionCallback> functions) {
+    public ChatClient createClient(String provider, String apiUrl, String apiKey,
+                                   String model, Double temperature) {
         String normalizedProvider = normalizeProvider(provider);
         String normalizedModel = normalizeModel(normalizedProvider, model);
         if (!normalizedModel.equals(model)) {
             log.warn("检测到 {} 模型别名，已自动归一化: {} -> {}", normalizedProvider, model, normalizedModel);
         }
-        log.info("创建ChatClient - 类型: {}, URL: {}, 模型: {}, 温度: {}, 函数数量: {}",
-                normalizedProvider, apiUrl, normalizedModel, temperature, functions.size());
+        log.info("创建ChatClient - 类型: {}, URL: {}, 模型: {}, 温度: {}",
+                normalizedProvider, apiUrl, normalizedModel, temperature);
 
         ChatModel chatModel = switch (normalizedProvider) {
             case "openai", "deepseek", "qwen", "step", "zhipu", "ai_ping", "agnes" ->
@@ -76,17 +72,7 @@ public class ChatClientFactory {
             default -> throw new IllegalArgumentException("不支持的提供商类型: " + provider);
         };
 
-        ChatClient.Builder builder = ChatClient.builder(chatModel);
-
-        // 注册函数 - 直接传入 FunctionCallback 实例
-        if (functions != null && !functions.isEmpty()) {
-            builder.defaultFunctions(functions.toArray(new FunctionCallback[0]));
-            for (FunctionCallback function : functions) {
-                log.debug("注册函数: {}", function.getName());
-            }
-        }
-
-        return builder.build();
+        return ChatClient.builder(chatModel).build();
     }
 
     /**

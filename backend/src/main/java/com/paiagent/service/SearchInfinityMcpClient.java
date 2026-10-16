@@ -41,6 +41,9 @@ public class SearchInfinityMcpClient {
     private static final Duration INITIALIZE_TIMEOUT = Duration.ofSeconds(90);
     private static final Duration CALL_TIMEOUT = Duration.ofSeconds(120);
 
+    /** 会话建立（子进程启动 + 握手）的重试次数上限（迭代7 #14：瞬时故障有界重试）。 */
+    private static final int MAX_START_ATTEMPTS = 2;
+
     public Map<String, Object> webSearch(McpToolConfig mcpToolConfig, String query, int count,
                                          String timeRange, Integer authLevel,
                                          String searchType) throws IOException {
@@ -66,7 +69,7 @@ public class SearchInfinityMcpClient {
             throw new IllegalArgumentException("联网搜索缺少 query");
         }
 
-        try (McpSession session = McpSession.start(resolveCommand(command), args, env)) {
+        try (McpSession session = openSession(resolveCommand(command), args, env)) {
             session.initialize();
             JSONObject arguments = new JSONObject();
             arguments.put("Query", query);
@@ -91,6 +94,54 @@ public class SearchInfinityMcpClient {
             throw new IOException("联网搜索 MCP 调用被中断", e);
         } catch (TimeoutException e) {
             throw new IOException("联网搜索 MCP 调用超时，请检查 uvx、网络或 mcp-server-askecho-search-infinity 是否可启动", e);
+        }
+    }
+
+    /**
+     * 建立 MCP 会话（子进程启动 + initialize 握手）。
+     *
+     * <p>迭代7（评审报告 #14）：进程启动依赖 uvx 拉包与网络，属典型瞬时故障，
+     * 补一次有界重试；<b>工具调用本身不重试</b>——搜索超时的重试会把最坏延迟翻倍，
+     * 且调用是否幂等由上游语义决定，不做隐式重放。
+     */
+    private McpSession openSession(String command, List<String> args, Map<String, String> env)
+            throws IOException, InterruptedException, TimeoutException {
+        IOException lastIoError = null;
+        TimeoutException lastTimeout = null;
+        for (int attempt = 1; attempt <= MAX_START_ATTEMPTS; attempt++) {
+            McpSession session = null;
+            try {
+                session = McpSession.start(command, args, env);
+                session.initialize();
+                return session;
+            } catch (IOException e) {
+                lastIoError = e;
+            } catch (TimeoutException e) {
+                lastTimeout = e;
+            }
+            closeQuietly(session);
+            if (attempt < MAX_START_ATTEMPTS) {
+                log.warn("联网搜索 MCP 会话建立失败，进行第 {} 次重试: command={}, cause={}",
+                        attempt + 1, command, lastIoError != null ? lastIoError.toString() : String.valueOf(lastTimeout));
+            }
+        }
+        if (lastIoError != null) {
+            throw lastIoError;
+        }
+        if (lastTimeout != null) {
+            throw lastTimeout;
+        }
+        throw new IOException("联网搜索 MCP 会话建立失败: command=" + command);
+    }
+
+    private void closeQuietly(McpSession session) {
+        if (session == null) {
+            return;
+        }
+        try {
+            session.close();
+        } catch (IOException e) {
+            log.debug("清理失败的 MCP 会话时出错: {}", e.toString());
         }
     }
 

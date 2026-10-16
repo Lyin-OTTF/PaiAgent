@@ -1,6 +1,7 @@
 package com.paiagent.controller;
 
 import com.paiagent.common.Result;
+import com.paiagent.common.UserContext;
 import com.paiagent.dto.ApprovalDecisionRequest;
 import com.paiagent.engine.agent.policy.PolicyRegistry;
 import com.paiagent.engine.agent.policy.ResolvedPolicy;
@@ -54,7 +55,9 @@ public class GovernanceController {
     public Result<ApprovalRecord> approve(@PathVariable Long id,
                                           @RequestBody(required = false) ApprovalDecisionRequest request) {
         try {
-            String approver = request != null ? request.getApprover() : null;
+            // 迭代7 A7：审批人取服务端会话身份，不再接受请求体传入——
+            // 修复前 approver 由前端自由填写，审计链上的「谁批的」可被随意伪造。
+            String approver = UserContext.currentOwner();
             String note = request != null ? request.getNote() : null;
             ApprovalRecord approved = approvalService.approve(id, approver, note);
             // 迭代6：审批通过即触发补执行（异步，不阻塞响应）；
@@ -71,7 +74,8 @@ public class GovernanceController {
     public Result<ApprovalRecord> reject(@PathVariable Long id,
                                          @RequestBody(required = false) ApprovalDecisionRequest request) {
         try {
-            String approver = request != null ? request.getApprover() : null;
+            // 迭代7 A7：拒绝操作同样以会话身份作为审批人
+            String approver = UserContext.currentOwner();
             String note = request != null ? request.getNote() : null;
             return Result.success(approvalService.reject(id, approver, note));
         } catch (RuntimeException e) {

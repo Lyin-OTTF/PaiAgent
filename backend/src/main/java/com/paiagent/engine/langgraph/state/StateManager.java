@@ -1,6 +1,5 @@
 package com.paiagent.engine.langgraph.state;
 
-import com.paiagent.engine.langgraph.WorkflowState;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
@@ -75,50 +74,6 @@ public class StateManager {
         
         log.info("初始化工作流状态: inputData={}", inputData);
         return state;
-    }
-    
-    /**
-     * 从 LangGraph 状态提取 WorkflowState
-     * 
-     * @param langGraphState LangGraph 状态 Map
-     * @return WorkflowState 对象
-     */
-    public WorkflowState extractWorkflowState(Map<String, Object> langGraphState) {
-        WorkflowState workflowState = new WorkflowState();
-        
-        // 提取基本字段
-        workflowState.setInputData((String) langGraphState.get("inputData"));
-        workflowState.setStatus((String) langGraphState.getOrDefault("status", "RUNNING"));
-        workflowState.setErrorMessage((String) langGraphState.get("errorMessage"));
-        workflowState.setStartTime((Long) langGraphState.get("startTime"));
-        workflowState.setCurrentNodeId((String) langGraphState.get("currentNodeId"));
-        
-        // 提取节点输出（以 nodeStatuses 为基准，状态如实反映；缺省时回退 nodeOutputs 全 SUCCESS）
-        @SuppressWarnings("unchecked")
-        Map<String, Object> nodeStatuses =
-            (Map<String, Object>) langGraphState.getOrDefault("nodeStatuses", new LinkedHashMap<>());
-        @SuppressWarnings("unchecked")
-        Map<String, Map<String, Object>> nodeOutputs =
-            (Map<String, Map<String, Object>>) langGraphState.getOrDefault("nodeOutputs", new HashMap<>());
-        
-        if (nodeStatuses.isEmpty()) {
-            for (Map.Entry<String, Map<String, Object>> entry : nodeOutputs.entrySet()) {
-                workflowState.updateNodeOutput(entry.getKey(), entry.getValue(), "SUCCESS");
-            }
-        } else {
-            for (Map.Entry<String, Object> entry : nodeStatuses.entrySet()) {
-                workflowState.updateNodeOutput(
-                        entry.getKey(), nodeOutputs.get(entry.getKey()), String.valueOf(entry.getValue()));
-            }
-        }
-        
-        // 提取全局上下文
-        @SuppressWarnings("unchecked")
-        Map<String, Object> globalContext = 
-            (Map<String, Object>) langGraphState.getOrDefault("globalContext", new HashMap<>());
-        workflowState.setGlobalContext(globalContext);
-        
-        return workflowState;
     }
     
     /**
@@ -219,10 +174,10 @@ public class StateManager {
         Map<String, Map<String, Object>> nodeOutputs = 
             (Map<String, Map<String, Object>>) state.getOrDefault("nodeOutputs", new HashMap<>());
         
-        // 创建节点 ID 到名称的映射
-        Map<String, String> nodeIdToName = new HashMap<>();
+        // 节点 ID → 节点类型（迭代7：原变量名 nodeIdToName 实际存的是 type，命名误导）
+        Map<String, String> nodeIdToType = new HashMap<>();
         for (var node : config.getNodes()) {
-            nodeIdToName.put(node.getId(), node.getType());
+            nodeIdToType.put(node.getId(), node.getType());
         }
         
         String errorMessage = (String) state.get("errorMessage");
@@ -235,7 +190,7 @@ public class StateManager {
             
             Map<String, Object> nodeResult = new HashMap<>();
             nodeResult.put("nodeId", nodeId);
-            nodeResult.put("nodeName", nodeIdToName.getOrDefault(nodeId, nodeId));
+            nodeResult.put("nodeName", nodeIdToType.getOrDefault(nodeId, nodeId));
             nodeResult.put("status", nodeStatus);
             if ("FAILED".equals(nodeStatus)) {
                 nodeResult.put("output", (String) null);

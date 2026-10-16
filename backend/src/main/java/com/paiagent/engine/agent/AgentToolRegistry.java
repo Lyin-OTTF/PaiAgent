@@ -1,5 +1,6 @@
 package com.paiagent.engine.agent;
 
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
@@ -11,6 +12,7 @@ import java.util.Map;
 /**
  * Registry for tools that are safe to expose to ReAct agent nodes.
  */
+@Slf4j
 @Component
 public class AgentToolRegistry {
 
@@ -36,6 +38,10 @@ public class AgentToolRegistry {
             AgentTool tool = tools.get(toolName);
             if (tool != null) {
                 selectedTools.add(tool);
+            } else {
+                // 迭代7：未知工具名不再静默忽略——配置拼错时会表现为「工具没被调用」，
+                // 难以定位；这里告警提示配置问题（是否抛错由调用方的 isEmpty 校验兜底）。
+                log.warn("忽略未注册的工具名: {}（可用工具: {}）", toolName, tools.keySet());
             }
         }
         return selectedTools;

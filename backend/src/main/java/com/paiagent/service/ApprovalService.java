@@ -1,13 +1,16 @@
 package com.paiagent.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.paiagent.entity.ApprovalRecord;
 import com.paiagent.mapper.ApprovalRecordMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * 人工审批服务（Human-in-the-Loop）。
@@ -26,6 +29,10 @@ import java.util.List;
 @Service
 public class ApprovalService {
 
+    private static final String PENDING_STATUS = "PENDING";
+    private static final String APPROVED_STATUS = "APPROVED";
+    private static final String REJECTED_STATUS = "REJECTED";
+
     private final ApprovalRecordMapper mapper;
     private final ActionLedgerService ledgerService;
 
@@ -41,29 +48,53 @@ public class ApprovalService {
         return record;
     }
 
-    /** 通过审批。 */
+    /** 通过审批（迭代7 A5：事务 + 条件更新，并发下只有一方生效）。 */
+    @Transactional
     public ApprovalRecord approve(Long id, String approver, String note) {
         return decide(id, approver, note, true);
     }
 
-    /** 拒绝审批。 */
+    /** 拒绝审批（迭代7 A5：同上）。 */
+    @Transactional
     public ApprovalRecord reject(Long id, String approver, String note) {
         return decide(id, approver, note, false);
     }
 
+    /**
+     * 审批决策（迭代7 A5 · 并发竞态修复）。
+     *
+     * <p>修复前是「select 读 PENDING → updateById 覆盖」的非原子写：并发
+     * approve + reject 都会通过 PENDING 检查，最后一次写覆盖前一次，审批状态不可信。
+     * 现改为<b>条件更新</b>（{@code WHERE id = ? AND status = 'PENDING'}），
+     * 以影响行数判定是否抢到决策权，抢不到即明确报错，不再静默覆盖。
+     */
     private ApprovalRecord decide(Long id, String approver, String note, boolean approved) {
         ApprovalRecord record = mapper.selectById(id);
         if (record == null) {
             throw new IllegalArgumentException("审批记录不存在: " + id);
         }
-        if (!"PENDING".equals(record.getStatus())) {
+        if (!PENDING_STATUS.equals(record.getStatus())) {
             throw new IllegalStateException("审批已处理，当前状态: " + record.getStatus());
         }
-        record.setStatus(approved ? "APPROVED" : "REJECTED");
+
+        String targetStatus = approved ? APPROVED_STATUS : REJECTED_STATUS;
+        LocalDateTime decidedAt = LocalDateTime.now();
+        int updated = mapper.update(null, new LambdaUpdateWrapper<ApprovalRecord>()
+                .eq(ApprovalRecord::getId, id)
+                .eq(ApprovalRecord::getStatus, PENDING_STATUS)
+                .set(ApprovalRecord::getStatus, targetStatus)
+                .set(ApprovalRecord::getApprover, approver)
+                .set(ApprovalRecord::getDecisionNote, note)
+                .set(ApprovalRecord::getDecidedAt, decidedAt));
+        if (updated == 0) {
+            throw new IllegalStateException("审批已被其他人处理，请刷新后重试: " + id);
+        }
+
+        // 内存对象同步为决策后状态，供审计同步与响应返回（无需再查库）
+        record.setStatus(targetStatus);
         record.setApprover(approver);
         record.setDecisionNote(note);
-        record.setDecidedAt(LocalDateTime.now());
-        mapper.updateById(record);
+        record.setDecidedAt(decidedAt);
         syncLedgerDecision(record, approved);
         return record;
     }
@@ -91,14 +122,30 @@ public class ApprovalService {
     }
 
     /**
-     * 审批单是否已获批准（迭代6：ToolGateway 预授权穿透的判定来源）。
-     * 记录不存在或非 APPROVED 均返回 false——网关据此决定新建审批还是直接执行。
+     * 审批单是否「已获批准且与本次调用匹配」（迭代7 A6 强化）。
+     *
+     * <p>迭代6 只校验 {@code status == APPROVED}：任意一个已批准的单号都能为
+     * <b>任意工具、任意租户</b>的调用做预授权穿透。现要求审批单与本次调用
+     * <b>同工具、同租户</b>才放行，把一个审批单的授权范围收敛到它真正审批过的那次调用。
+     *
+     * @param approvalId 审批单 ID
+     * @param toolName   本次调用的工具名
+     * @param tenantId   本次调用的租户
+     * @return 记录存在、状态为 APPROVED，且工具与租户均匹配时返回 true
      */
-    public boolean isApproved(Long approvalId) {
+    public boolean isApprovedFor(Long approvalId, String toolName, String tenantId) {
         if (approvalId == null) {
             return false;
         }
         ApprovalRecord record = mapper.selectById(approvalId);
-        return record != null && "APPROVED".equals(record.getStatus());
+        if (record == null || !APPROVED_STATUS.equals(record.getStatus())) {
+            return false;
+        }
+        if (toolName != null && !toolName.equals(record.getToolName())) {
+            log.warn("审批单 [{}] 的工具为 [{}]，与本次调用工具 [{}] 不匹配，拒绝预授权穿透",
+                    approvalId, record.getToolName(), toolName);
+            return false;
+        }
+        return Objects.equals(tenantId, record.getTenantId());
     }
 }

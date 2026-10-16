@@ -1,5 +1,6 @@
 package com.paiagent.controller;
 
+import com.paiagent.common.ApiKeyMasker;
 import com.paiagent.common.Result;
 import com.paiagent.entity.LLMGlobalConfig;
 import com.paiagent.service.LLMGlobalConfigService;
@@ -13,6 +14,9 @@ import java.util.List;
 
 /**
  * 全局模型配置管理控制器。
+ *
+ * <p>迭代7（评审报告 A3）：所有出站响应统一对 {@code apiKey} 打码下发——
+ * 修复前四个查询接口直接返回实体，任何登录用户都能读到全部供应商的明文密钥。
  */
 @Tag(name = "全局模型配置接口")
 @RestController
@@ -26,14 +30,14 @@ public class LLMConfigController {
     @GetMapping("/{provider}")
     public Result<List<LLMGlobalConfig>> listByProvider(@PathVariable String provider) {
         List<LLMGlobalConfig> configs = llmGlobalConfigService.listByProvider(provider);
-        return Result.success(configs);
+        return Result.success(masked(configs));
     }
 
     @Operation(summary = "获取所有配置列表")
     @GetMapping
     public Result<List<LLMGlobalConfig>> listAll() {
         List<LLMGlobalConfig> configs = llmGlobalConfigService.list();
-        return Result.success(configs);
+        return Result.success(masked(configs));
     }
 
     @Operation(summary = "获取配置详情")
@@ -43,14 +47,14 @@ public class LLMConfigController {
         if (config == null) {
             return Result.error("配置不存在");
         }
-        return Result.success(config);
+        return Result.success(masked(config));
     }
 
     @Operation(summary = "获取指定提供商的默认配置")
     @GetMapping("/default/{provider}")
     public Result<LLMGlobalConfig> getDefaultConfig(@PathVariable String provider) {
         LLMGlobalConfig config = llmGlobalConfigService.getDefaultConfig(provider);
-        return Result.success(config);
+        return Result.success(masked(config));
     }
 
     @Operation(summary = "保存配置（新增或更新）")
@@ -58,7 +62,7 @@ public class LLMConfigController {
     public Result<LLMGlobalConfig> saveConfig(@RequestBody LLMGlobalConfig config) {
         try {
             LLMGlobalConfig saved = llmGlobalConfigService.saveConfig(config);
-            return Result.success(saved);
+            return Result.success(masked(saved));
         } catch (IllegalArgumentException e) {
             return Result.error("保存配置失败: " + e.getMessage());
         } catch (DuplicateKeyException e) {
@@ -84,5 +88,28 @@ public class LLMConfigController {
         } catch (Exception e) {
             return Result.error("设置默认配置失败: " + e.getMessage());
         }
+    }
+
+    /**
+     * 出站脱敏（迭代7 A3）：统一对 apiKey 打码后再返回。
+     * 与 {@code LLMGlobalConfigService.saveConfig} 的「掩码回写保护」配对，
+     * 实现「前端可辨识展示、密钥不落前端、保存时不会被掩码写坏」。
+     */
+    private List<LLMGlobalConfig> masked(List<LLMGlobalConfig> configs) {
+        if (configs != null) {
+            configs.forEach(this::maskInPlace);
+        }
+        return configs;
+    }
+
+    private LLMGlobalConfig masked(LLMGlobalConfig config) {
+        if (config != null) {
+            maskInPlace(config);
+        }
+        return config;
+    }
+
+    private void maskInPlace(LLMGlobalConfig config) {
+        config.setApiKey(ApiKeyMasker.mask(config.getApiKey()));
     }
 }

@@ -36,7 +36,11 @@ public class SensitiveDataMasker {
         String result = EMAIL.matcher(content).replaceAll(m -> maskEmail(m.group()));
         result = PHONE.matcher(result).replaceAll(m -> maskKeep(m.group(), 3, 4));
         result = ID_CARD.matcher(result).replaceAll(m -> maskKeep(m.group(), 4, 4));
-        result = BANK_CARD.matcher(result).replaceAll(m -> maskKeep(m.group(), 4, 4));
+        // 迭代7：银行卡候选串还需通过 Luhn 校验才打码。
+        // 修复前 15-19 位连续数字一律打码，订单号/流水号/时间戳等普通长数字也被误伤，
+        // 污染记忆内容、损害检索质量。
+        result = BANK_CARD.matcher(result).replaceAll(m ->
+                luhnValid(m.group()) ? maskKeep(m.group(), 4, 4) : m.group());
         return result;
     }
 
@@ -45,17 +49,48 @@ public class SensitiveDataMasker {
         if (!StringUtils.hasText(content)) {
             return false;
         }
-        return PHONE.matcher(content).find()
+        if (PHONE.matcher(content).find()
                 || ID_CARD.matcher(content).find()
-                || BANK_CARD.matcher(content).find()
-                || EMAIL.matcher(content).find();
+                || EMAIL.matcher(content).find()) {
+            return true;
+        }
+        // 银行卡同样用 Luhn 过滤，避免把普通长数字误判为敏感
+        var bankMatcher = BANK_CARD.matcher(content);
+        while (bankMatcher.find()) {
+            if (luhnValid(bankMatcher.group())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Luhn（模 10）校验：银行卡号满足该校验，订单号/流水号等通常不满足。
+     * 用于把「15-19 位数字」这个粗粒度模式收敛到真正的卡号。
+     */
+    private boolean luhnValid(String digits) {
+        int sum = 0;
+        boolean doubleDigit = false;
+        for (int i = digits.length() - 1; i >= 0; i--) {
+            int value = digits.charAt(i) - '0';
+            if (doubleDigit) {
+                value *= 2;
+                if (value > 9) {
+                    value -= 9;
+                }
+            }
+            sum += value;
+            doubleDigit = !doubleDigit;
+        }
+        return sum % 10 == 0;
     }
 
     private String maskEmail(String email) {
         int at = email.indexOf('@');
-        if (at <= 1) {
+        if (at <= 0) {
             return email;
         }
+        // 迭代7：单字符本地部分（a@x.com）此前被原样返回而泄露，现统一打码
         return email.charAt(0) + "***" + email.substring(at);
     }
 

@@ -112,14 +112,11 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
 
             log.info("LangGraph 执行完成");
 
-            // 6. 推进成功终态并检查执行状态（迭代6：状态机三态完备化）
+            // 6. 推进成功终态（迭代6：状态机三态完备化）
             // invoke 正常返回 => 所有已路由节点执行完毕且无节点失败
-            // （节点失败会以 NodeExecutionException 抛出，走 catch 分支）
+            // （节点失败会以 NodeExecutionException 抛出，走 catch 分支）。
+            // 迭代7：删除紧随其后的 isSuccessful 判断——markSuccess 之后它恒为真，属死分支。
             finalState = stateManager.markSuccess(finalState);
-            if (!stateManager.isSuccessful(finalState)) {
-                status = "FAILED";
-                errorMessage = stateManager.getErrorMessage(finalState);
-            }
 
             // 7. 提取输出数据（失败时不输出半成品，与 DAG 引擎一致）
             Map<String, Object> outputData = stateManager.getFinalOutput(finalState);
@@ -292,12 +289,9 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
 
             String status = "SUCCESS";
             String errorMessage = null;
-            // 迭代6：恢复执行正常返回同样推进 SUCCESS 终态（节点失败会抛 NodeExecutionException）
+            // 迭代6：恢复执行正常返回同样推进 SUCCESS 终态（节点失败会抛 NodeExecutionException）；
+            // 迭代7：删除其后恒真的 isSuccessful 死分支
             finalState = stateManager.markSuccess(finalState);
-            if (!stateManager.isSuccessful(finalState)) {
-                status = "FAILED";
-                errorMessage = stateManager.getErrorMessage(finalState);
-            }
 
             Map<String, Object> outputData = stateManager.getFinalOutput(finalState);
             String outputDataJson = "SUCCESS".equals(status) ? JSON.toJSONString(outputData) : null;
@@ -319,11 +313,18 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
         } catch (NodeExecutionException nodeFailure) {
             // fail-stop（迭代6）：恢复执行中节点失败——与 DAG 引擎 resume 语义一致，
             // 返回带部分结果的 FAILED 响应，不向上抛异常。
+            // 迭代7（双引擎对齐）：补上「部分结果提取」——修复前这里恒返回空列表，
+            // 而 execute 的失败分支会保留部分结果，同一次失败两条出口行为不一致。
             log.error("LangGraph 断点续执行失败（节点级 fail-stop）: executionId={}, error={}",
                     executionId, nodeFailure.getMessage());
+
+            var partialNodeResults = stateManager.extractNodeResults(
+                    nodeFailure.getStateSnapshot(), config);
+
             record.setStatus("FAILED");
             record.setErrorMessage(nodeFailure.getMessage());
             record.setOutputData(null);
+            record.setNodeResults(JSON.toJSONString(partialNodeResults));
             record.setDuration((int) (System.currentTimeMillis() - startTime));
             executionRecordMapper.updateById(record);
 
@@ -336,7 +337,7 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
             response.setExecutionId(record.getId());
             response.setStatus("FAILED");
             response.setInputData(record.getInputData());
-            response.setNodeResults(new ArrayList<>());
+            response.setNodeResults(toResponseNodeResults(partialNodeResults));
             response.setOutputData(null);
             response.setErrorMessage(nodeFailure.getMessage());
             response.setDuration(record.getDuration());

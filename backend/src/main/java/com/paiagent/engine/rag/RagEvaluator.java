@@ -20,6 +20,9 @@ import java.util.function.BiFunction;
  */
 public class RagEvaluator {
 
+    /** 默认评测的知识库 ID（迭代7：原先硬编码 1L，现抽为常量并支持显式指定）。 */
+    public static final long DEFAULT_KNOWLEDGE_BASE_ID = 1L;
+
     /**
      * @param searchFn (knowledgeBaseId, query) -> 按相关度降序的候选
      */
@@ -27,7 +30,8 @@ public class RagEvaluator {
             List<Integer> ks,
             Map<Integer, Double> recallAtK,
             double mrr,
-            int hitRate,
+            /** 至少命中一次相关结果的用例数（迭代7：原字段名 hitRate 名不副实——它是计数而非比率）。 */
+            int hitCases,
             int caseCount,
             double meanLatencyMs,
             double p50LatencyMs,
@@ -35,9 +39,20 @@ public class RagEvaluator {
     ) {
     }
 
-    private final List<Double> latencies = new ArrayList<>();
-
     public Report evaluate(List<EvaluationCase> cases, BiFunction<Long, String, List<ScoredChunk>> searchFn, int... ks) {
+        return evaluate(DEFAULT_KNOWLEDGE_BASE_ID, cases, searchFn, ks);
+    }
+
+    /**
+     * 指定知识库的评测（迭代7 · 报告 #16）。
+     *
+     * <p>修复前检索调用硬编码 {@code knowledgeBaseId = 1L}：评测其它知识库时会悄悄
+     * 拿 1 号库的数据出结论，指标失去意义。现由调用方显式指定。
+     *
+     * @param knowledgeBaseId 被评测的知识库 ID
+     */
+    public Report evaluate(long knowledgeBaseId, List<EvaluationCase> cases,
+                           BiFunction<Long, String, List<ScoredChunk>> searchFn, int... ks) {
         if (cases == null || cases.isEmpty()) {
             List<Integer> requestedKs = Arrays.stream(ks == null ? new int[0] : ks).boxed().toList();
             return new Report(requestedKs, Map.of(), 0, 0, 0, 0, 0, 0);
@@ -56,7 +71,7 @@ public class RagEvaluator {
                 continue;
             }
             long start = System.nanoTime();
-            List<ScoredChunk> hits = searchFn.apply(1L, evaluationCase.query());
+            List<ScoredChunk> hits = searchFn.apply(knowledgeBaseId, evaluationCase.query());
             latencies.add((System.nanoTime() - start) / 1_000_000.0);
             List<Long> hitIds = hits == null ? List.of() : hits.stream().map(ScoredChunk::chunkId).toList();
             Set<Long> relevant = Set.copyOf(evaluationCase.relevantChunkIds());

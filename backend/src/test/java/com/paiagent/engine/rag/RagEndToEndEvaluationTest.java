@@ -51,7 +51,7 @@ class RagEndToEndEvaluationTest {
 
         System.out.printf("[RAG-Eval] hybrid: Recall@5=%.3f Recall@10=%.3f MRR=%.3f hitRate=%d/%d latency mean=%.3fms p99=%.3fms%n",
                 hybridReport.recallAtK().get(5), hybridReport.recallAtK().get(10), hybridReport.mrr(),
-                hybridReport.hitRate(), hybridReport.caseCount(),
+                hybridReport.hitCases(), hybridReport.caseCount(),
                 hybridReport.meanLatencyMs(), hybridReport.p99LatencyMs());
         System.out.printf("[RAG-Eval] lexical-only: Recall@5=%.3f Recall@10=%.3f MRR=%.3f%n",
                 lexicalReport.recallAtK().get(5), lexicalReport.recallAtK().get(10), lexicalReport.mrr());
