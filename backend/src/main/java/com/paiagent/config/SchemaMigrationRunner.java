@@ -230,6 +230,14 @@ public class SchemaMigrationRunner implements ApplicationRunner {
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='人工审批记录表'
                 """);
 
+        // 迭代6：HITL 审批 resume 闭环 —— 挂起上下文全量快照 + 补执行状态观测
+        addColumnIfMissing("approval_record", "suspend_context",
+                "ALTER TABLE approval_record ADD COLUMN suspend_context MEDIUMTEXT DEFAULT NULL COMMENT 'HITL挂起上下文快照(JSON)' AFTER input_summary");
+        addColumnIfMissing("approval_record", "resume_status",
+                "ALTER TABLE approval_record ADD COLUMN resume_status VARCHAR(30) DEFAULT NULL COMMENT '补执行状态(SUCCEEDED/FAILED/SKIPPED)' AFTER decision_note");
+        addColumnIfMissing("approval_record", "resume_error",
+                "ALTER TABLE approval_record ADD COLUMN resume_error TEXT DEFAULT NULL COMMENT '补执行失败原因' AFTER resume_status");
+
         // 迭代2：扩展 agent_memory 表，支持分层记忆（WORKING/SESSION/USER/TEAM）+ TTL + 脱敏来源
         addColumnIfMissing("agent_memory", "session_id",
                 "ALTER TABLE agent_memory ADD COLUMN session_id VARCHAR(100) DEFAULT NULL COMMENT '会话 ID（SESSION/WORKING 层）' AFTER source");

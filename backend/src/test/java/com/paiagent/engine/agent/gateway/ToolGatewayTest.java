@@ -12,9 +12,11 @@ import com.paiagent.service.ActionLedgerService;
 import com.paiagent.service.ApprovalService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -190,5 +192,95 @@ class ToolGatewayTest {
         assertEquals("boom", ex.getMessage());
         verify(ledger).record(argThat(record -> "ERROR".equals(record.getActionStatus())
                 && "boom".equals(record.getErrorMessage())));
+    }
+
+    // ------------------------------------------------------------------
+    // 迭代6：预授权穿透（HITL resume 的网关侧行为）
+    // ------------------------------------------------------------------
+
+    private ToolExecutionContext preApprovedCtx(Long approvalId) {
+        return new ToolExecutionContext("global", AutonomyLevel.EXECUTE, "react_agent",
+                1L, 2L, "node-1", null, approvalId);
+    }
+
+    @Test
+    void shouldExecuteWithApprovedApprovalWithoutCreatingNewOne() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t7")).thenReturn(new ResolvedPolicy(AutonomyLevel.ESCALATE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        when(approval.isApproved(42L)).thenReturn(true);
+
+        FakeTool tool = new FakeTool("t7", Map.of("v", "ok"));
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        // 等级越限（ESCALATE > EXECUTE）但携带已获批审批单：直接穿透执行
+        ToolGatewayResult result = gw.execute(tool, Map.of(), preApprovedCtx(42L), new AgentToolContext(null, Map.of()));
+
+        assertEquals(GatewayStatus.EXECUTED, result.status());
+        assertEquals(1, tool.calls.get());
+        // 不新建审批单；审计行关联该审批单
+        verify(approval, never()).create(any());
+        verify(ledger).record(argThat(record ->
+                "EXECUTED".equals(record.getActionStatus()) && Long.valueOf(42L).equals(record.getApprovalId())));
+    }
+
+    @Test
+    void shouldStillRouteToApprovalWhenCarriedApprovalNotApproved() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t8")).thenReturn(new ResolvedPolicy(AutonomyLevel.ESCALATE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        // 审批单存在但已被拒绝/尚未获批：不放行，转新审批
+        when(approval.isApproved(99L)).thenReturn(false);
+        when(approval.create(any())).thenAnswer(inv -> {
+            ApprovalRecord r = inv.getArgument(0);
+            r.setId(100L);
+            return r;
+        });
+
+        FakeTool tool = new FakeTool("t8", Map.of());
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        ToolGatewayResult result = gw.execute(tool, Map.of(), preApprovedCtx(99L), new AgentToolContext(null, Map.of()));
+
+        assertEquals(GatewayStatus.PENDING_APPROVAL, result.status());
+        assertEquals(100L, result.approvalId());
+        assertEquals(0, tool.calls.get());
+        verify(approval).create(any());
+    }
+
+    @Test
+    void shouldPersistSuspendContextOnApprovalRecord() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t9")).thenReturn(new ResolvedPolicy(AutonomyLevel.ESCALATE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        when(approval.create(any())).thenAnswer(inv -> {
+            ApprovalRecord r = inv.getArgument(0);
+            r.setId(7L);
+            return r;
+        });
+
+        Map<String, Object> suspendContext = new LinkedHashMap<>();
+        suspendContext.put("executionId", 100);
+        suspendContext.put("toolName", "t9");
+        suspendContext.put("trace", List.of(Map.of("step", 1)));
+        ToolExecutionContext callCtx = new ToolExecutionContext(
+                "global", AutonomyLevel.EXECUTE, "react_agent", 100L, 200L, "node-1", suspendContext, null);
+
+        FakeTool tool = new FakeTool("t9", Map.of());
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+        gw.execute(tool, Map.of(), callCtx, new AgentToolContext(null, Map.of()));
+
+        ArgumentCaptor<ApprovalRecord> captor = ArgumentCaptor.forClass(ApprovalRecord.class);
+        verify(approval).create(captor.capture());
+        ApprovalRecord created = captor.getValue();
+        assertNotNull(created.getSuspendContext(), "挂起快照必须落库");
+        assertTrue(created.getSuspendContext().contains("\"toolName\":\"t9\""));
+        assertTrue(created.getSuspendContext().contains("\"executionId\":100"));
     }
 }

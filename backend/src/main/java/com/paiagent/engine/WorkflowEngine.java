@@ -199,6 +199,10 @@ public class WorkflowEngine implements WorkflowExecutor {
                     nodeInput = new LinkedHashMap<>(nodeInput);
                     nodeInput.putAll(resumeState.modifiedVariables);
                 }
+                // 注入执行身份（迭代6）：审批记录/ActionLedger/HITL 恢复都依赖
+                // 节点输入携带 executionId/workflowId 关联到具体执行
+                nodeInput.put("executionId", record.getId());
+                nodeInput.put("workflowId", flowId);
                 
                 long nodeStartTime = System.currentTimeMillis();
                 ExecutionSnapshot snapshot = createOrUpdateSnapshotStart(record.getId(), flowId, node, nodeInput, sortedNodes.indexOf(node), nodeStartTime);
@@ -399,6 +403,9 @@ public class WorkflowEngine implements WorkflowExecutor {
                 resolved = new LinkedHashMap<>(resolved);
                 resolved.putAll(resumeState.modifiedVariables);
             }
+            // 注入执行身份（迭代6）：与串行路径同源，审批/审计/HITL 恢复共用
+            resolved.put("executionId", record.getId());
+            resolved.put("workflowId", flowId);
             return resolved;
         };
 

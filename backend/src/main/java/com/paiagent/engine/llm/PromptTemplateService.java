@@ -57,31 +57,40 @@ public class PromptTemplateService {
         }
         
         for (Map<String, Object> param : inputParams) {
-            String paramName = (String) param.get("name");
-            String paramType = (String) param.get("type");
+            if (param == null) {
+                continue;
+            }
+            String paramName = asString(param.get("name"));
+            String paramType = asString(param.get("type"));
+            if (paramName == null || paramName.isBlank()) {
+                continue;
+            }
+            // 与 replaceTemplateVariables 的取键方式保持一致（都 trim），
+            // 否则参数名带空格时模板占位符取不到值
+            paramName = paramName.trim();
             
             if ("input".equals(paramType)) {
                 // 静态输入值
                 Object value = param.get("value");
                 if (value != null) {
-                    paramValues.put(paramName, value.toString());
+                    paramValues.put(paramName, String.valueOf(value));
                 }
             } else if ("reference".equals(paramType)) {
-                // 引用上游节点输出
-                String reference = (String) param.get("referenceNode");
-                if (reference != null && reference.contains(".")) {
-                    String[] parts = reference.split("\\.");
-                    String refParamName = parts[parts.length - 1];
-                    
-                    Object refValue = runtimeInput.get(refParamName);
-                    // 兼容处理：user_input 可能存储为 input
-                    if (refValue == null && "user_input".equals(refParamName)) {
-                        refValue = runtimeInput.get("input");
-                    }
-                    
-                    if (refValue != null) {
-                        paramValues.put(paramName, refValue.toString());
-                    }
+                // 引用上游节点输出：兼容 "nodeId.param" 与裸 "param" 两种写法。
+                // 修复前只处理含 "." 的写法，reference 直接写参数名时会被静默忽略。
+                String refParamName = extractReferenceParamName(asString(param.get("referenceNode")));
+                if (refParamName == null) {
+                    continue;
+                }
+                
+                Object refValue = runtimeInput == null ? null : runtimeInput.get(refParamName);
+                // 兼容处理：user_input 可能存储为 input
+                if (refValue == null && "user_input".equals(refParamName) && runtimeInput != null) {
+                    refValue = runtimeInput.get("input");
+                }
+                
+                if (refValue != null) {
+                    paramValues.put(paramName, String.valueOf(refValue));
                 }
             }
         }
@@ -90,18 +99,48 @@ public class PromptTemplateService {
     }
     
     /**
-     * 替换模板中的{{variable}}变量
+     * 从引用标识中取末段参数名：既支持 {@code "nodeId.param"}，也支持裸 {@code "param"}。
+     * 无法解析时返回 null（调用方跳过该参数）。
+     */
+    private String extractReferenceParamName(String reference) {
+        if (reference == null || reference.isBlank()) {
+            return null;
+        }
+        String trimmed = reference.trim();
+        int dot = trimmed.lastIndexOf('.');
+        String name = dot >= 0 ? trimmed.substring(dot + 1) : trimmed;
+        return name.isBlank() ? null : name;
+    }
+    
+    private String asString(Object value) {
+        return value == null ? null : String.valueOf(value);
+    }
+    
+    /**
+     * 替换模板中的 {{variable}} 变量。
+     *
+     * <p>用 {@link Matcher#appendReplacement} 单遍替换：
+     * <ul>
+     *   <li>变量名取 {@code group(1).trim()}，因此 {@code {{ var }}} 这类带空格的
+     *       占位符也能被识别（修复前用去空格后的 {@code {{var}}} 去 replace，
+     *       带空格的占位符永远匹配不到）；</li>
+     *   <li>替换整段 {@code group(0)}，不做二次扫描，参数值里若恰好含
+     *       {@code {{...}}} 也不会被重复替换；</li>
+     *   <li>用 {@link Matcher#quoteReplacement} 转义，参数值含 {@code $} / {@code \}
+     *       时不会被当成替换分组引用而损坏内容。</li>
+     * </ul>
      */
     private String replaceTemplateVariables(String template, Map<String, String> paramValues) {
-        String result = template;
         Matcher matcher = TEMPLATE_PATTERN.matcher(template);
+        StringBuilder result = new StringBuilder();
         
         while (matcher.find()) {
             String paramName = matcher.group(1).trim();
-            String paramValue = paramValues.getOrDefault(paramName, "");
-            result = result.replace("{{" + paramName + "}}", paramValue);
+            String paramValue = paramValues.get(paramName);
+            matcher.appendReplacement(result, Matcher.quoteReplacement(paramValue == null ? "" : paramValue));
         }
+        matcher.appendTail(result);
         
-        return result;
+        return result.toString();
     }
 }

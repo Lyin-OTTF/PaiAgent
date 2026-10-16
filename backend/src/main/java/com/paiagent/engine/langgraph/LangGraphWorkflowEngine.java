@@ -92,8 +92,8 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
             // 3. 构建 LangGraph（条件边 / 循环守卫 / Checkpoint 装配）
             CompiledGraph<AgentState> compiledGraph = graphBuilder.buildGraph(config, eventCallback);
 
-            // 4. 初始化状态（使用 AgentState）
-            Map<String, Object> initialStateData = stateManager.initializeState(inputData);
+            // 4. 初始化状态（使用 AgentState；携带执行身份，供审批/审计关联与 HITL 恢复锚定）
+            Map<String, Object> initialStateData = stateManager.initializeState(inputData, record.getId(), workflow.getId());
 
             // 5. 执行图
             log.info("开始执行 LangGraph");
@@ -112,15 +112,18 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
 
             log.info("LangGraph 执行完成");
 
-            // 6. 检查执行状态
+            // 6. 推进成功终态并检查执行状态（迭代6：状态机三态完备化）
+            // invoke 正常返回 => 所有已路由节点执行完毕且无节点失败
+            // （节点失败会以 NodeExecutionException 抛出，走 catch 分支）
+            finalState = stateManager.markSuccess(finalState);
             if (!stateManager.isSuccessful(finalState)) {
                 status = "FAILED";
                 errorMessage = stateManager.getErrorMessage(finalState);
             }
 
-            // 7. 提取输出数据
+            // 7. 提取输出数据（失败时不输出半成品，与 DAG 引擎一致）
             Map<String, Object> outputData = stateManager.getFinalOutput(finalState);
-            String outputDataJson = JSON.toJSONString(outputData);
+            String outputDataJson = "SUCCESS".equals(status) ? JSON.toJSONString(outputData) : null;
 
             // 8. 提取节点执行结果
             var nodeResultsList = stateManager.extractNodeResults(finalState, config);
@@ -144,6 +147,46 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
             // 11. 构建响应
             return buildResponse(record, nodeResultsList, outputDataJson, duration);
 
+        } catch (NodeExecutionException nodeFailure) {
+            // fail-stop（迭代6）：节点失败即终止。与 DAG 引擎一致——
+            // 保留已执行节点的部分结果（失败节点带 FAILED 状态），
+            // 未启动节点不出现在结果中，outputData 为 null。
+            status = "FAILED";
+            errorMessage = nodeFailure.getMessage();
+            log.error("工作流执行失败（节点级 fail-stop）: {}", errorMessage);
+
+            if (eventCallback != null) {
+                eventCallback.accept(ExecutionEvent.workflowComplete("FAILED", errorMessage,
+                    (int) (System.currentTimeMillis() - startTime)));
+            }
+
+            if (record == null) {
+                record = new ExecutionRecord();
+                record.setFlowId(workflow.getId());
+                record.setInputData(JSON.toJSONString(Map.of("input", inputData)));
+                record.setNodeResults("[]");
+                executionRecordMapper.insert(record);
+            }
+
+            Map<String, Object> failedState = nodeFailure.getStateSnapshot();
+            var partialNodeResults = stateManager.extractNodeResults(
+                    failedState, workflowConfigParser.parse(workflow.getFlowData()));
+            record.setOutputData(null);
+            record.setStatus("FAILED");
+            record.setNodeResults(JSON.toJSONString(partialNodeResults));
+            record.setErrorMessage(errorMessage);
+            record.setDuration((int) (System.currentTimeMillis() - startTime));
+            executionRecordMapper.updateById(record);
+
+            ExecutionResponse response = new ExecutionResponse();
+            response.setExecutionId(record.getId());
+            response.setStatus("FAILED");
+            response.setInputData(record.getInputData());
+            response.setNodeResults(toResponseNodeResults(partialNodeResults));
+            response.setOutputData(null);
+            response.setErrorMessage(errorMessage);
+            response.setDuration(record.getDuration());
+            return response;
         } catch (Exception e) {
             status = "FAILED";
             errorMessage = e.getMessage();
@@ -249,13 +292,15 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
 
             String status = "SUCCESS";
             String errorMessage = null;
+            // 迭代6：恢复执行正常返回同样推进 SUCCESS 终态（节点失败会抛 NodeExecutionException）
+            finalState = stateManager.markSuccess(finalState);
             if (!stateManager.isSuccessful(finalState)) {
                 status = "FAILED";
                 errorMessage = stateManager.getErrorMessage(finalState);
             }
 
             Map<String, Object> outputData = stateManager.getFinalOutput(finalState);
-            String outputDataJson = JSON.toJSONString(outputData);
+            String outputDataJson = "SUCCESS".equals(status) ? JSON.toJSONString(outputData) : null;
             var nodeResultsList = stateManager.extractNodeResults(finalState, config);
             int duration = (int) (System.currentTimeMillis() - startTime);
 
@@ -271,6 +316,31 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
             }
             return buildResponse(record, nodeResultsList, outputDataJson, duration);
 
+        } catch (NodeExecutionException nodeFailure) {
+            // fail-stop（迭代6）：恢复执行中节点失败——与 DAG 引擎 resume 语义一致，
+            // 返回带部分结果的 FAILED 响应，不向上抛异常。
+            log.error("LangGraph 断点续执行失败（节点级 fail-stop）: executionId={}, error={}",
+                    executionId, nodeFailure.getMessage());
+            record.setStatus("FAILED");
+            record.setErrorMessage(nodeFailure.getMessage());
+            record.setOutputData(null);
+            record.setDuration((int) (System.currentTimeMillis() - startTime));
+            executionRecordMapper.updateById(record);
+
+            if (eventCallback != null) {
+                eventCallback.accept(ExecutionEvent.workflowComplete("FAILED", nodeFailure.getMessage(),
+                        (int) (System.currentTimeMillis() - startTime)));
+            }
+
+            ExecutionResponse response = new ExecutionResponse();
+            response.setExecutionId(record.getId());
+            response.setStatus("FAILED");
+            response.setInputData(record.getInputData());
+            response.setNodeResults(new ArrayList<>());
+            response.setOutputData(null);
+            response.setErrorMessage(nodeFailure.getMessage());
+            response.setDuration(record.getDuration());
+            return response;
         } catch (Exception e) {
             log.error("LangGraph 断点续执行失败: executionId={}", executionId, e);
             record.setStatus("FAILED");
@@ -330,7 +400,19 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
         response.setExecutionId(record.getId());
         response.setStatus(record.getStatus());
         response.setInputData(record.getInputData());
+        response.setNodeResults(toResponseNodeResults(nodeResultsList));
 
+        response.setOutputData(outputDataJson);
+        response.setErrorMessage(record.getErrorMessage());
+        response.setDuration(duration);
+        return response;
+    }
+
+    /**
+     * 将 StateManager 提取的节点结果 Map 列表转换为响应对象（迭代6：补充 error 字段）。
+     */
+    private java.util.List<ExecutionResponse.NodeResult> toResponseNodeResults(
+            java.util.List<Map<String, Object>> nodeResultsList) {
         java.util.List<ExecutionResponse.NodeResult> nodeResults = new ArrayList<>();
         for (Map<String, Object> nodeResultMap : nodeResultsList) {
             ExecutionResponse.NodeResult nodeResult = new ExecutionResponse.NodeResult();
@@ -338,13 +420,9 @@ public class LangGraphWorkflowEngine implements WorkflowExecutor {
             nodeResult.setNodeName((String) nodeResultMap.get("nodeName"));
             nodeResult.setStatus((String) nodeResultMap.get("status"));
             nodeResult.setOutput((String) nodeResultMap.get("output"));
+            nodeResult.setError((String) nodeResultMap.get("error"));
             nodeResults.add(nodeResult);
         }
-        response.setNodeResults(nodeResults);
-
-        response.setOutputData(outputDataJson);
-        response.setErrorMessage(record.getErrorMessage());
-        response.setDuration(duration);
-        return response;
+        return nodeResults;
     }
 }
