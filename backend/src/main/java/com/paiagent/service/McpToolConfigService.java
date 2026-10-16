@@ -5,6 +5,7 @@ import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.paiagent.common.McpCommandValidator;
 import com.paiagent.dto.AgentPlanWebSearchMcpRequest;
 import com.paiagent.dto.McpToolConfigRequest;
 import com.paiagent.entity.McpToolConfig;
@@ -152,7 +153,11 @@ public class McpToolConfigService extends ServiceImpl<McpToolConfigMapper, McpTo
         config.setToolType(firstText(request.getToolType(), "custom"));
         config.setToolName(requireText(request.getToolName(), "工具名不能为空"));
         config.setTransport(firstText(request.getTransport(), "stdio"));
-        config.setCommand(requireText(request.getCommand(), "启动命令不能为空"));
+        // 迭代9 P1-6：启动命令白名单——修复前 command 由请求体直填后原样进 ProcessBuilder，
+        // 任意已认证调用方都能借配置接口在服务端执行本地命令。
+        String command = requireText(request.getCommand(), "启动命令不能为空");
+        McpCommandValidator.assertSafeCommand(command);
+        config.setCommand(command);
         config.setArgs(JSON.toJSONString(request.getArgs() == null ? List.of() : request.getArgs()));
         config.setEnv(JSON.toJSONString(request.getEnv() == null ? Map.of() : request.getEnv()));
         config.setEnabled(request.getEnabled() == null || request.getEnabled() == 1 ? 1 : 0);

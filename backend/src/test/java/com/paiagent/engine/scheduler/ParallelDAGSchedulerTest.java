@@ -1,5 +1,7 @@
 package com.paiagent.engine.scheduler;
 
+import com.paiagent.common.UserContext;
+import com.paiagent.engine.agent.tenant.TenantContext;
 import com.paiagent.engine.dag.DAGParser;
 import com.paiagent.engine.model.WorkflowConfig;
 import com.paiagent.engine.model.WorkflowEdge;
@@ -17,6 +19,7 @@ import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -406,6 +409,95 @@ class ParallelDAGSchedulerTest {
         Map<String, Object> mInput = stub.receivedInputs.get("m");
         assertTrue(mInput.containsKey("fromP"), "合并节点应拿到前驱 p 的输出");
         assertTrue(mInput.containsKey("fromQ"), "合并节点应拿到前驱 q 的输出");
+    }
+
+    // ---------------------------------------------------------------- 迭代9 P1-8：上下文传播
+
+    /**
+     * P1-8：调度线程必须继承调用方的用户归属与租户上下文。
+     * 修复前工作线程上下文为空 → 用户归属退化为 system、租户退化为 global，
+     * 并行分支里的知识库/记忆/工具调用既可能越权也可能被归属校验误拒。
+     */
+    @Test
+    void nodeExecution_inheritsCallerUserAndTenantContext() {
+        List<WorkflowNode> nodes = List.of(node("only", "llm"));
+        StubExecutor stub = new StubExecutor();
+        AtomicReference<String> seenOwner = new AtomicReference<>();
+        AtomicReference<String> seenTenant = new AtomicReference<>();
+        stub.on("only", input -> {
+            seenOwner.set(UserContext.getCurrent());
+            seenTenant.set(TenantContext.getCurrent());
+            return NodeOutcome.of(Map.of("ok", true));
+        });
+
+        UserContext.setCurrent("alice");
+        TenantContext.setCurrent("tenant-x");
+        try {
+            ScheduleOutcome outcome = schedule(nodes, List.of(), stub,
+                    Map.of("input", "seed"), ResumeContext.empty(), 2);
+            assertEquals("SUCCESS", outcome.getStatus());
+        } finally {
+            UserContext.clear();
+            TenantContext.clear();
+        }
+
+        assertEquals("alice", seenOwner.get(), "工作线程须继承调用方用户归属");
+        assertEquals("tenant-x", seenTenant.get(), "工作线程须继承调用方租户");
+    }
+
+    /**
+     * 上下文按节点投影且用完即清：同一线程复用执行多个节点时，每个节点都看到调用方上下文，
+     * 而调用线程自身与工作线程在调度结束后都不残留（防线程池复用串扰）。
+     */
+    @Test
+    void nodeExecution_projectsContextPerNodeAndClearsAfterwards() {
+        List<WorkflowNode> nodes = List.of(node("a", "input"), node("b", "llm"), node("c", "output"));
+        List<WorkflowEdge> edges = List.of(edge("a", "b"), edge("b", "c"));
+
+        StubExecutor stub = new StubExecutor();
+        List<String> observed = new CopyOnWriteArrayList<>();
+        for (String id : List.of("a", "b", "c")) {
+            stub.on(id, input -> {
+                observed.add(id + ":" + UserContext.getCurrent() + ":" + TenantContext.getCurrent());
+                return NodeOutcome.of(Map.of("node", id));
+            });
+        }
+
+        UserContext.setCurrent("bob");
+        TenantContext.setCurrent("tenant-y");
+        try {
+            // 池大小 1：三个节点必然复用同一工作线程，可验证逐节点投影而非一次性继承
+            ScheduleOutcome outcome = schedule(nodes, edges, stub, Map.of("input", "seed"), ResumeContext.empty(), 1);
+            assertEquals("SUCCESS", outcome.getStatus());
+        } finally {
+            UserContext.clear();
+            TenantContext.clear();
+        }
+
+        assertEquals(List.of("a:bob:tenant-y", "b:bob:tenant-y", "c:bob:tenant-y"), new ArrayList<>(observed));
+    }
+
+    /** 调用方无上下文时工作线程也应为空——不得把 system/global 兜底值与线程残留带进并行分支。 */
+    @Test
+    void nodeExecution_seesNullOrContextWhenCallerHasNone() {
+        List<WorkflowNode> nodes = List.of(node("only", "llm"));
+        StubExecutor stub = new StubExecutor();
+        AtomicReference<String> seenOwner = new AtomicReference<>("sentinel");
+        AtomicReference<String> seenTenant = new AtomicReference<>("sentinel");
+        stub.on("only", input -> {
+            seenOwner.set(UserContext.getCurrent());
+            seenTenant.set(TenantContext.getCurrent());
+            return NodeOutcome.of(Map.of("ok", true));
+        });
+
+        UserContext.clear();
+        TenantContext.clear();
+        ScheduleOutcome outcome = schedule(nodes, List.of(), stub,
+                Map.of("input", "seed"), ResumeContext.empty(), 2);
+
+        assertEquals("SUCCESS", outcome.getStatus());
+        assertNull(seenOwner.get(), "调用方无归属时工作线程不应自行兜底");
+        assertNull(seenTenant.get(), "调用方无租户时工作线程不应自行兜底");
     }
 
     private static void sleep(long millis) {

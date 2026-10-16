@@ -31,6 +31,13 @@ public class Bm25Retriever implements Retriever {
     private static final int MIN_CANDIDATES = 50;
     private static final long STATS_TTL_MILLIS = 5 * 60 * 1000L;
 
+    /**
+     * df 缓存条目上限（迭代9 P1-9）：修复前 {@code dfCache} 是无界 ConcurrentHashMap，
+     * 「知识库 × 词条」组合会随语料与查询用语持续累积。达到上限后不再新增缓存
+     * （已有条目仍命中），写入侧 {@link #invalidateStats(Long)} 失效后可继续填充。
+     */
+    private static final int MAX_DF_CACHE_ENTRIES = 20_000;
+
     private final KnowledgeChunkMapper chunkMapper;
     private final ChineseAnalyzer analyzer = ChineseAnalyzer.shared();
     private final Bm25Scorer scorer = new Bm25Scorer();
@@ -92,7 +99,10 @@ public class Bm25Retriever implements Retriever {
             df = cached;
         } else {
             df = chunkMapper.countByFulltextTerm(knowledgeBaseId, term);
-            dfCache.put(cacheKey, df);
+            // 迭代9 P1-9：有界缓存，超限不再新增（避免无界增长）
+            if (dfCache.size() < MAX_DF_CACHE_ENTRIES) {
+                dfCache.put(cacheKey, df);
+            }
         }
         return scorer.idf(stats.corpusSize(), df);
     }

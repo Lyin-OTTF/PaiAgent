@@ -2,6 +2,7 @@ package com.paiagent.service;
 
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.paiagent.common.UserContext;
 import com.paiagent.engine.WorkflowConfigParser;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
@@ -11,6 +12,7 @@ import com.paiagent.engine.agent.gateway.ToolExecutionContext;
 import com.paiagent.engine.agent.gateway.ToolGateway;
 import com.paiagent.engine.agent.gateway.ToolGatewayResult;
 import com.paiagent.engine.agent.hitl.HitlSuspendContext;
+import com.paiagent.engine.agent.tenant.TenantContext;
 import com.paiagent.engine.executor.impl.ReActAgentNodeExecutor;
 import com.paiagent.engine.model.WorkflowConfig;
 import com.paiagent.engine.model.WorkflowNode;
@@ -142,13 +144,25 @@ public class HitlResumeService {
             markFailed(record, "挂起上下文解析失败: " + e.getMessage());
             return;
         }
-        if (snapshot == null || snapshot.executionId() == null || snapshot.toolName() == null) {
-            markFailed(record, "挂起上下文缺少必要字段（executionId/toolName）");
+        if (snapshot == null || snapshot.executionId() == null
+                || snapshot.workflowId() == null || snapshot.toolName() == null) {
+            markFailed(record, "挂起上下文缺少必要字段（executionId/workflowId/toolName）");
             return;
         }
 
+        Workflow workflow = workflowService.getById(snapshot.workflowId());
+        if (workflow == null) {
+            markFailed(record, "工作流不存在: " + snapshot.workflowId());
+            return;
+        }
+
+        // 迭代9 P1-8：补执行线程不继承请求上下文，需从工作流归属 + 挂起租户显式投影——
+        // 否则节点内的知识库/记忆/工具调用在「无归属」下执行：归属退化为 system
+        // （越权读写用户私有知识库）且租户退化为 global。执行完必须清理，防线程复用串扰。
+        UserContext.setCurrent(workflow.getOwner());
+        TenantContext.setCurrent(snapshot.tenantId());
         try {
-            WorkflowNode node = resolveNode(snapshot);
+            WorkflowNode node = resolveNode(workflow, snapshot);
             AgentTool tool = toolRegistry.getRequiredTool(snapshot.toolName());
 
             // 预授权补执行：allowedLevel 保持挂起时的运行时等级（不人为抬升），
@@ -179,17 +193,14 @@ public class HitlResumeService {
         } catch (Exception e) {
             log.error("HITL 补执行失败: approvalId={}", approvalId, e);
             markFailed(record, e.getMessage());
+        } finally {
+            UserContext.clear();
+            TenantContext.clear();
         }
     }
 
     /** 从工作流定义解析挂起节点（工作流被删/节点被删时给出明确失败原因）。 */
-    private WorkflowNode resolveNode(HitlSuspendContext snapshot) {        if (snapshot.workflowId() == null) {
-            throw new IllegalStateException("挂起上下文缺少 workflowId");
-        }
-        Workflow workflow = workflowService.getById(snapshot.workflowId());
-        if (workflow == null) {
-            throw new IllegalStateException("工作流不存在: " + snapshot.workflowId());
-        }
+    private WorkflowNode resolveNode(Workflow workflow, HitlSuspendContext snapshot) {
         WorkflowConfig config = workflowConfigParser.parse(workflow.getFlowData());
         if (config.getNodes() != null) {
             for (WorkflowNode node : config.getNodes()) {

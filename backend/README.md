@@ -44,9 +44,10 @@ MYSQL_PASSWORD=your_mysql_password
 # JWT 密钥（生产环境必须修改！）
 JWT_SECRET=your_jwt_secret_key_minimum_32_characters
 
-# 默认管理员账户（可选，留空则禁用）
+# 默认管理员账户（可选；两个都留空 = 禁用默认账户）
+# ⚠️ 弱口令（admin / admin123 / 123456 等）或短于 8 位的口令会导致启动失败
 APP_AUTH_DEFAULT_USERNAME=admin
-APP_AUTH_DEFAULT_PASSWORD=admin123
+APP_AUTH_DEFAULT_PASSWORD=your_own_strong_password
 ```
 
 或通过系统环境变量设置：
@@ -84,8 +85,12 @@ export JWT_SECRET=your_jwt_secret
 
 ```bash
 APP_AUTH_DEFAULT_USERNAME=admin
-APP_AUTH_DEFAULT_PASSWORD=admin123
+APP_AUTH_DEFAULT_PASSWORD=your_own_strong_password
 ```
+
+> 仓库不再内置任何可用默认口令：两个变量都留空即禁用默认账户；
+> 若显式配置了弱口令（`admin` / `admin123` / `123456` / `password` 等）或短于 8 位的口令，
+> 应用会在启动时直接失败（`ConfigValidationRunner` fail-fast），避免弱口令被静默带上线。
 
 **生产环境建议**：
 - 禁用默认账户：将两个变量都设为空值

@@ -38,7 +38,7 @@ mysql -u root -p < backend/src/main/resources/schema.sql
 **Backend:** Copy `backend/.env.example` to `backend/.env` and configure:
 - `MYSQL_PASSWORD` - Required for database connection
 - `JWT_SECRET` - Required for token signing (min 32 chars for production)
-- `APP_AUTH_DEFAULT_USERNAME/PASSWORD` - Default admin account (default: admin/admin123)
+- `APP_AUTH_DEFAULT_USERNAME/PASSWORD` - Default admin account (**no built-in default**; both must be set together, and weak passwords such as `admin123` make startup fail)
 - `SERVER_PORT` - Backend port (default: 8084)
 
 **Frontend:** Copy `frontend/.env.example` to `frontend/.env.local` and configure:
@@ -123,7 +123,7 @@ Key features:
 
 - **Backend**: Spring Boot 3.4.1, Java 21, MyBatis-Plus 3.5.5, MySQL 8.0+, FastJSON2, Spring AI 1.0.0-M5, LangGraph4j 1.8.0-beta3, JJWT 0.12.7
 - **Frontend**: React 18, TypeScript 5.6, Vite 6, ReactFlow (@xyflow/react), Ant Design 6, Tailwind CSS 4, Zustand 5
-- **Authentication**: JWT-based auth (default: admin/admin123, configurable via env)
+- **Authentication**: JWT-based auth (default admin account is disabled unless `APP_AUTH_DEFAULT_USERNAME/PASSWORD` are set; weak passwords are rejected at startup)
 - **API Docs**: Swagger UI at http://localhost:8084/swagger-ui.html
 
 ## Development Notes

@@ -7,18 +7,31 @@ import org.springframework.ai.openai.OpenAiChatModel;
 import org.springframework.ai.openai.OpenAiChatOptions;
 import org.springframework.ai.openai.api.OpenAiApi;
 import org.springframework.ai.retry.RetryUtils;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.http.converter.json.MappingJackson2HttpMessageConverter;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.reactive.function.client.WebClient;
 
+import java.time.Duration;
 import java.util.List;
 import java.util.Locale;
 
 /**
  * ChatClient动态工厂
  * 根据节点配置在运行时创建不同类型的ChatClient实例
+ *
+ * <p><b>迭代9 P1-5（评审报告第九章 🟡5）</b>：原先各分支用
+ * {@code new OpenAiApi(url, key)} / {@code RestClient.builder()} 创建客户端，
+ * 底层 {@code SimpleClientHttpRequestFactory} 的连接与读取超时都是 0（无限）——
+ * 一旦上游半开连接（SYN 黑洞 / 不返回响应），worker 线程会永久阻塞，
+ * 有界线程池被逐个耗尽。现统一注入连接/读取超时。
+ *
+ * <p>说明：{@code WebClient}（流式路径）的超时依赖响应式连接器，本项目未引入
+ * reactor-netty（编译期不可用），故流式分支保持默认；同步 {@code call()} 路径
+ * 已由 RestClient 超时覆盖——而它正是会阻塞线程池的那条路径。
  */
 @Slf4j
 @Component
@@ -27,6 +40,14 @@ public class ChatClientFactory {
     private static final String CHAT_COMPLETIONS_SUFFIX = "/v1/chat/completions";
 
     private static final String V1_SUFFIX = "/v1";
+
+    /** LLM 连接超时（毫秒）；字段默认值与 {@code @Value} 兜底一致，便于直接 new 的单测。 */
+    @Value("${paiagent.llm.connect-timeout-ms:10000}")
+    private int connectTimeoutMs = 10_000;
+
+    /** LLM 读取超时（毫秒）：大模型长回答留足时间。 */
+    @Value("${paiagent.llm.read-timeout-ms:120000}")
+    private int readTimeoutMs = 120_000;
 
     /**
      * 根据提供商和配置创建ChatClient
@@ -86,8 +107,14 @@ public class ChatClientFactory {
             log.warn("检测到 OpenAI 兼容接口地址包含路径后缀，已自动归一化: {} -> {}", apiUrl, normalizedApiUrl);
         }
 
-        // 使用构造函数创建OpenAiApi（支持自定义baseUrl）
-        OpenAiApi openAiApi = new OpenAiApi(normalizedApiUrl, apiKey);
+        // 使用构造函数创建OpenAiApi（支持自定义baseUrl）；迭代9：显式注入带超时的 RestClient
+        OpenAiApi openAiApi = new OpenAiApi(
+                normalizedApiUrl,
+                apiKey,
+                createRestClientBuilder(),
+                WebClient.builder(),
+                RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER
+        );
 
         // 创建ChatModel并配置选项
         OpenAiChatOptions options = OpenAiChatOptions.builder()
@@ -141,7 +168,7 @@ public class ChatClientFactory {
                 apiKey,
                 "/api/plan/v3/chat/completions",
                 "/api/plan/v3/embeddings",
-                RestClient.builder(),
+                createRestClientBuilder(),
                 WebClient.builder(),
                 RetryUtils.DEFAULT_RESPONSE_ERROR_HANDLER
         );
@@ -196,8 +223,20 @@ public class ChatClientFactory {
                 MediaType.TEXT_PLAIN
         ));
 
-        return RestClient.builder()
+        return createRestClientBuilder()
                 .messageConverters(converters -> converters.add(0, textPlainJsonConverter));
+    }
+
+    /**
+     * 创建带超时的 RestClient.Builder（迭代9 P1-5）。
+     * 使用 {@link SimpleClientHttpRequestFactory}：底层 HttpURLConnection，
+     * 超时语义直观（连接建立 + 单次读取），避免半开连接永久占用线程。
+     */
+    private RestClient.Builder createRestClientBuilder() {
+        SimpleClientHttpRequestFactory requestFactory = new SimpleClientHttpRequestFactory();
+        requestFactory.setConnectTimeout(Duration.ofMillis(Math.max(1, connectTimeoutMs)));
+        requestFactory.setReadTimeout(Duration.ofMillis(Math.max(1, readTimeoutMs)));
+        return RestClient.builder().requestFactory(requestFactory);
     }
 
     private String normalizeProvider(String provider) {

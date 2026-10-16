@@ -36,6 +36,28 @@ public class ConfigValidationRunner implements ApplicationRunner {
     // 最小 JWT secret 长度（字符数）
     private static final int MIN_JWT_SECRET_LENGTH = 32;
 
+    // 默认管理员密码最小长度（字符数）
+    private static final int MIN_DEFAULT_PASSWORD_LENGTH = 8;
+
+    // 弱默认口令黑名单（迭代9：补 admin123 等此前漏检的仓库默认值）
+    private static final String[] WEAK_DEFAULT_PASSWORDS = {
+        "admin",
+        "admin123",
+        "admin1234",
+        "admin@123",
+        "password",
+        "password123",
+        "123",
+        "123456",
+        "12345678",
+        "root",
+        "test",
+        "test123",
+        "paiagent",
+        "changeme",
+        "change-me"
+    };
+
     @Autowired
     private JwtSecretProvider jwtSecretProvider;
 
@@ -64,42 +86,52 @@ public class ConfigValidationRunner implements ApplicationRunner {
     private String defaultPassword;
 
     /**
-     * 校验默认管理员账户配置
+     * 校验默认管理员账户配置（迭代9 · 评审报告第九章 🔴4）。
+     *
+     * <p>修复前 {@code application.yml} 默认下发 {@code admin/admin123}：仓库默认弱口令会被
+     * 静默启用（弱口令黑名单还不含 admin123），部署即等同于公开一个管理员账号。
+     * 现改为：默认留空=禁用；一旦显式配置了弱口令或过短口令，启动即 fail-fast。
      */
     private void validateDefaultCredentials() {
-        if (defaultUsername == null || defaultPassword == null) {
-            log.info("ℹ️  未配置默认管理员账户（生产环境建议）");
+        String username = defaultUsername == null ? "" : defaultUsername.trim();
+        String password = defaultPassword == null ? "" : defaultPassword.trim();
+
+        if (username.isEmpty() || password.isEmpty()) {
+            log.info("ℹ️  未启用默认管理员账户（留空即禁用）。如需启用请同时配置 "
+                    + "APP_AUTH_DEFAULT_USERNAME / APP_AUTH_DEFAULT_PASSWORD，并使用强口令。");
             return;
         }
 
-        String trimmedUsername = defaultUsername.trim();
-        String trimmedPassword = defaultPassword.trim();
-
-        if (trimmedUsername.isEmpty() && trimmedPassword.isEmpty()) {
-            log.info("ℹ️  默认管理员账户已禁用");
-            return;
+        if (password.length() < MIN_DEFAULT_PASSWORD_LENGTH) {
+            log.error("==========================================");
+            log.error("❌ 默认管理员密码过短，拒绝启动！");
+            log.error("   当前长度: {} 字符（至少 {} 字符）", password.length(), MIN_DEFAULT_PASSWORD_LENGTH);
+            log.error("   生产环境必须使用强密码，或留空禁用默认账户");
+            log.error("==========================================");
+            throw new IllegalStateException("Weak default admin password: too short");
         }
 
-        // 检查弱密码
-        if (trimmedPassword.length() < 8) {
-            log.warn("==========================================");
-            log.warn("⚠️  默认管理员密码过弱！");
-            log.warn("   当前密码长度: {} 字符（建议至少 8 字符）", trimmedPassword.length());
-            log.warn("   生产环境必须使用强密码！");
-            log.warn("   建议：不配置默认账户，或使用强密码");
-            log.warn("==========================================");
+        if (isWeakDefaultPassword(password)) {
+            log.error("==========================================");
+            log.error("❌ 检测到弱默认管理员口令，拒绝启动！");
+            log.error("   用户名: {}", username);
+            log.error("   该口令属于常见默认值字典，部署即等同于公开管理员账号");
+            log.error("   请改用强口令，或留空 APP_AUTH_DEFAULT_USERNAME/PASSWORD 以禁用默认账户");
+            log.error("==========================================");
+            throw new IllegalStateException("Weak default admin password detected");
         }
 
-        // 检查是否为常见默认值
-        if ("admin".equals(trimmedUsername) && ("admin".equals(trimmedPassword) || "123".equals(trimmedPassword) || "123456".equals(trimmedPassword))) {
-            log.warn("==========================================");
-            log.warn("⚠️  使用了默认管理员账户的弱密码！");
-            log.warn("   检测到: {}/{}", trimmedUsername, trimmedPassword);
-            log.warn("   生产环境必须修改！");
-            log.warn("==========================================");
-        } else {
-            log.info("✅ 默认管理员账户已配置");
+        log.info("✅ 默认管理员账户已配置（用户名: {}）", username);
+    }
+
+    private boolean isWeakDefaultPassword(String password) {
+        String lower = password.toLowerCase();
+        for (String weak : WEAK_DEFAULT_PASSWORDS) {
+            if (weak.equalsIgnoreCase(password) || weak.equals(lower)) {
+                return true;
+            }
         }
+        return false;
     }
 
     @Override

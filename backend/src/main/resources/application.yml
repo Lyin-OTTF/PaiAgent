@@ -41,7 +41,7 @@ mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true
     cache-enabled: false
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
   global-config:
     db-config:
       id-type: auto
@@ -72,15 +72,40 @@ minio:
 
 # PaiAgent 配置
 paiagent:
+  engine:
+    # 是否启用有界并行 DAG 调度（默认关闭，保持串行行为；开启后独立分支将并行执行）
+    parallel-enabled: ${PAIAGENT_ENGINE_PARALLEL_ENABLED:false}
+    # 并行调度线程池大小（有界并发的上限）
+    scheduler-pool-size: ${PAIAGENT_ENGINE_SCHEDULER_POOL_SIZE:4}
   auth:
     # 本地开发未配置 JWT_SECRET 时会自动生成临时强密钥；生产环境请务必显式配置
     jwt-secret: ${JWT_SECRET:}
     access-token-expiration-minutes: 120
     refresh-token-expiration-hours: 168
-  # 默认管理员账户（生产环境必须修改或禁用）
+  # 默认管理员账户（迭代9：默认留空=禁用；生产环境请通过环境变量显式配置强口令）
   # 通过环境变量 APP_AUTH_DEFAULT_USERNAME 和 APP_AUTH_DEFAULT_PASSWORD 配置
-  # 留空则禁用默认账户，必须通过注册功能创建账户
-  default-username: ${APP_AUTH_DEFAULT_USERNAME:admin}
-  default-password: ${APP_AUTH_DEFAULT_PASSWORD:admin123}
+  # 留空则禁用默认账户，必须通过注册功能创建账户；若配置了弱口令，启动将直接失败
+  default-username: ${APP_AUTH_DEFAULT_USERNAME:}
+  default-password: ${APP_AUTH_DEFAULT_PASSWORD:}
   skills:
     path: skills
+  # 迭代5：LangGraph 检查点保留策略（防止检查点表随执行次数无限增长）
+  langgraph:
+    # 单线程（= 单次执行）最多保留的检查点条数；恢复只依赖线程内最新一条，窗口内必然保留
+    checkpoint-retain-per-thread: ${PAIAGENT_LANGGRAPH_CHECKPOINT_RETAIN_PER_THREAD:50}
+    # 定时清理 retain-days 天前创建的检查点（执行完成 7 天后通常不再需要恢复）
+    checkpoint-retain-days: ${PAIAGENT_LANGGRAPH_CHECKPOINT_RETAIN_DAYS:7}
+  # 迭代3：RAG 混合检索参数（BM25 词法路 + 向量稠密路，RRF 融合后重排）
+  rag:
+    # 混合检索总开关：false 时 KnowledgeBaseService 回退原全表扫描实现
+    hybrid-enabled: true
+    # 每路召回候选 = topK * candidateFactor，过大稀释 BM25 排序收益，过小丢失向量路候选
+    candidate-factor: 10
+    # RRF 平滑常数 k（论文常用 60）
+    rrf-k: 60
+    # 重排权重：RRF 归一化分 / 正文查询词覆盖率 / 标题查询词覆盖率（和应为 1）
+    rrf-weight: 0.4
+    coverage-weight: 0.4
+    title-weight: 0.2
+    # 单个向量索引桶（知识库 × 维度）的最大向量数；超限时向量路显式失败并降级词法路
+    max-vectors: 100000
