@@ -8,6 +8,7 @@ import com.paiagent.entity.ApprovalRecord;
 import com.paiagent.entity.ActionLedger;
 import com.paiagent.service.ActionLedgerService;
 import com.paiagent.service.ApprovalService;
+import com.paiagent.service.HitlResumeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.web.bind.annotation.*;
@@ -18,6 +19,9 @@ import java.util.Map;
 
 /**
  * 受限自治层治理接口：审批流（HITL）与工具调用审计。
+ *
+ * <p>迭代6：审批通过后异步触发 {@link HitlResumeService} 补执行——
+ * 响应不阻塞续跑（LLM 多步），补执行结果经审批记录 resumeStatus 与执行记录可观测。
  */
 @Tag(name = "受限自治层治理接口")
 @RestController
@@ -27,13 +31,16 @@ public class GovernanceController {
     private final ApprovalService approvalService;
     private final ActionLedgerService actionLedgerService;
     private final PolicyRegistry policyRegistry;
+    private final HitlResumeService hitlResumeService;
 
     public GovernanceController(ApprovalService approvalService,
                                 ActionLedgerService actionLedgerService,
-                                PolicyRegistry policyRegistry) {
+                                PolicyRegistry policyRegistry,
+                                HitlResumeService hitlResumeService) {
         this.approvalService = approvalService;
         this.actionLedgerService = actionLedgerService;
         this.policyRegistry = policyRegistry;
+        this.hitlResumeService = hitlResumeService;
     }
 
     @Operation(summary = "查询审批列表（可按状态过滤：PENDING/APPROVED/REJECTED）")
@@ -49,7 +56,11 @@ public class GovernanceController {
         try {
             String approver = request != null ? request.getApprover() : null;
             String note = request != null ? request.getNote() : null;
-            return Result.success(approvalService.approve(id, approver, note));
+            ApprovalRecord approved = approvalService.approve(id, approver, note);
+            // 迭代6：审批通过即触发补执行（异步，不阻塞响应）；
+            // 无挂起上下文的历史审批内部标记 SKIPPED，保持审计闭环行为
+            hitlResumeService.resumeAsync(approved);
+            return Result.success(approved);
         } catch (RuntimeException e) {
             return Result.error(e.getMessage());
         }

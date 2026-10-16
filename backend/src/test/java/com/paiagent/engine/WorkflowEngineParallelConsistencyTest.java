@@ -232,18 +232,34 @@ class WorkflowEngineParallelConsistencyTest {
         return map;
     }
 
-    /** 提取节点关键信息用于跨模式对比（剔除耗时）。 */
+    /** 提取节点关键信息用于跨模式对比（剔除耗时与每次执行特有的运行时身份）。 */
     private List<Map<String, String>> nodeSummaries(List<ExecutionResponse.NodeResult> nodeResults) {
         return nodeResults.stream()
                 .map(r -> {
                     Map<String, String> summary = new LinkedHashMap<>();
                     summary.put("nodeId", r.getNodeId());
                     summary.put("status", r.getStatus());
-                    summary.put("input", r.getInput());
+                    summary.put("input", normalizeInput(r.getInput()));
                     summary.put("output", r.getOutput());
                     return summary;
                 })
                 .collect(Collectors.toList());
+    }
+
+    /**
+     * 归一化节点输入快照：剔除执行身份（executionId/workflowId）。
+     *
+     * <p>迭代6 起引擎会把「本次执行特有」的身份注入节点输入，两次独立执行（串行/并行各一次）
+     * 的 executionId 必然不同，这属于运行环境差异而非串行 vs 并行的语义差异，比较时应忽略。
+     */
+    private String normalizeInput(String inputJson) {
+        if (inputJson == null) {
+            return null;
+        }
+        Map<String, Object> parsed = JSON.parseObject(inputJson, Map.class);
+        parsed.remove("executionId");
+        parsed.remove("workflowId");
+        return JSON.toJSONString(parsed);
     }
 
     private Workflow buildDiamondWorkflow() {

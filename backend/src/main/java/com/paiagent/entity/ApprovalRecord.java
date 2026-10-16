@@ -42,6 +42,23 @@ public class ApprovalRecord {
     /** 入参摘要 */
     private String inputSummary;
 
+    /**
+     * 挂起上下文快照（迭代6 HITL 恢复）。
+     * ReAct 节点转入审批时，由执行器把「续跑所需的全部状态」序列化存入：
+     * goalPrompt / input / trace / step / maxSteps / toolName / toolInput / tenantId / allowedLevel 等。
+     * 修复前只存 500 字符摘要，审批通过后无法还原参数补执行，闭环断裂在此。
+     */
+    private String suspendContext;
+
+    /**
+     * 补执行状态（迭代6）：SUCCEEDED / FAILED / SKIPPED / null（未触发补执行）。
+     * SKIPPED 覆盖「无挂起上下文」的历史审批（仅审计闭环的旧行为兼容）。
+     */
+    private String resumeStatus;
+
+    /** 补执行失败原因（resumeStatus=FAILED 时非空） */
+    private String resumeError;
+
     /** 请求的自治等级 */
     private String requestedLevel;
 

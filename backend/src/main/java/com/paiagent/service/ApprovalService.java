@@ -13,14 +13,14 @@ import java.util.List;
  * 人工审批服务（Human-in-the-Loop）。
  * 提供创建待审批项、通过/拒绝决策，以及按状态查询的能力。
  *
- * <p><b>关于「审批通过后恢复执行」的架构结论（迭代1 遗留问题处置记录）</b>：
- * 当前执行语义是「软挂起」——工具转入审批后 ReAct 节点以 {@code approval_required} 收尾，
- * 工作流并不暂停，执行记录正常完成，因此不存在可供 resume 的断点；
- * 且审批记录只存 500 字符入参摘要，无法可靠还原完整参数做补执行。
- * 故本服务在决策落地后做**审计闭环**（把 PENDING_APPROVAL 账本行更新为
- * APPROVED/REJECTED 并追加决策意见），保证人工决策在审计链路中留痕；
- * 若未来要支持真正的「暂停-恢复」HITL，需要重新设计执行状态机与审批参数持久化，
- * 属于独立迭代范围。
+ * <p><b>HITL 闭环演进（迭代1 遗留 → 迭代6 闭环）</b>：
+ * 迭代1 时执行语义是「软挂起」——工具转入审批后 ReAct 节点以 {@code approval_required} 收尾，
+ * 工作流不暂停、执行记录正常完成，且审批记录只存 500 字符入参摘要，无法还原完整参数补执行，
+ * 因此决策落地后只能做审计闭环（PENDING_APPROVAL 账本行更新为 APPROVED/REJECTED）。
+ * 迭代6 补齐了真正闭环：审批记录新增 {@code suspendContext} 全量续跑快照，
+ * 审批通过后由 {@code HitlResumeService} 凭快照补执行被挂起的工具调用并续跑 ReAct 循环，
+ * 最终回写执行记录；补执行状态观测在 {@code resumeStatus}/{@code resumeError}。
+ * 无挂起上下文的历史审批仍走纯审计路径（resumeStatus=SKIPPED），行为向后兼容。
  */
 @Slf4j
 @Service
@@ -88,5 +88,17 @@ public class ApprovalService {
         }
         wrapper.orderByDesc(ApprovalRecord::getCreatedAt);
         return mapper.selectList(wrapper);
+    }
+
+    /**
+     * 审批单是否已获批准（迭代6：ToolGateway 预授权穿透的判定来源）。
+     * 记录不存在或非 APPROVED 均返回 false——网关据此决定新建审批还是直接执行。
+     */
+    public boolean isApproved(Long approvalId) {
+        if (approvalId == null) {
+            return false;
+        }
+        ApprovalRecord record = mapper.selectById(approvalId);
+        return record != null && "APPROVED".equals(record.getStatus());
     }
 }

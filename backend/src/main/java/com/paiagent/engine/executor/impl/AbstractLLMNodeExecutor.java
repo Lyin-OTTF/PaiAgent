@@ -17,16 +17,11 @@ import com.paiagent.service.ResolvedAgentPlanConfig;
 import com.paiagent.service.VolcengineAgentPlanClient;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.messages.Message;
-import org.springframework.ai.chat.messages.SystemMessage;
-import org.springframework.ai.chat.messages.UserMessage;
 import org.springframework.ai.chat.model.ChatResponse;
-import org.springframework.ai.chat.prompt.Prompt;
-import org.springframework.ai.model.function.FunctionCallback;
 import org.springframework.beans.factory.annotation.Autowired;
 
-import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -65,11 +60,6 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
     protected VolcengineAgentPlanClient agentPlanClient;
 
     /**
-     * 最大函数调用迭代次数
-     */
-    private static final int MAX_FUNCTION_ITERATIONS = 5;
-    
-    /**
      * 获取节点类型标识
      */
     protected abstract String getNodeType();
@@ -94,9 +84,12 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
         log.info("{} 输入数据: {}", provider.toUpperCase(Locale.ROOT), input);
 
         // 2. 获取关联的 Skill（如果有）
+        // 说明：早期版本规划过用 Function Calling 动态加载 Skill 细节，后改为在系统
+        // 提示词中一次性打包全部 references（见 buildSystemPrompt）。因此不存在任何
+        // function 注册来源——原先恒空的 functions 列表与 executeWithFunctions 分支
+        // 是死代码，已移除，避免后续维护者误以为该能力仍然可用。
         Optional<Skill> skill = Optional.empty();
         Map<String, String> skillReferences = new HashMap<>();
-        List<FunctionCallback> functions = new ArrayList<>();
 
         if (config.getSkillName() != null && !config.getSkillName().isBlank()) {
             skill = skillRegistry.getSkill(config.getSkillName());
@@ -106,10 +99,6 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
                 // 直接加载所有 references，打包进 Prompt
                 skillReferences = skillRegistry.loadAllReferences(config.getSkillName());
                 log.info("{} 加载了 {} 个 reference 文件", provider.toUpperCase(Locale.ROOT), skillReferences.size());
-
-                // 不再需要注册函数，直接打包所有内容
-                // functions.add(new LoadSkillDetailFunction(skillRegistry));
-                // functions.add(new LoadSkillReferenceFunction(skillRegistry));
             } else {
                 log.warn("{} 未找到 Skill: {}", provider.toUpperCase(Locale.ROOT), config.getSkillName());
             }
@@ -130,26 +119,20 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
         }
         log.info("最终提示词: {}", userPrompt);
 
-        // 5. 创建 ChatClient（带或不带 Functions）
-        ChatClient chatClient = chatClientFactory.createClientWithFunctions(
+        // 5. 创建 ChatClient
+        ChatClient chatClient = chatClientFactory.createClient(
                 provider,
                 config.getApiUrl(),
                 config.getApiKey(),
                 config.getModel(),
-                config.getTemperature(),
-                functions
+                config.getTemperature()
         );
 
-        // 6. 调用 LLM（支持函数调用循环）
+        // 6. 调用 LLM（流式 / 普通）
         LLMResponse llmResponse;
         if (config.isStreaming() && progressCallback != null) {
-            // 流式模式暂不支持函数调用
             llmResponse = executeStreaming(chatClient, systemPrompt, userPrompt, node, progressCallback);
-        } else if (!functions.isEmpty()) {
-            // 带 Function Calling 的执行
-            llmResponse = executeWithFunctions(chatClient, systemPrompt, userPrompt, functions);
         } else {
-            // 普通执行
             llmResponse = executeNormal(chatClient, systemPrompt, userPrompt);
         }
 
@@ -295,49 +278,6 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
     }
 
     /**
-     * 带函数调用的执行（支持多轮对话）
-     */
-    private LLMResponse executeWithFunctions(ChatClient chatClient, String systemPrompt,
-                                             String userPrompt, List<FunctionCallback> functions) {
-        List<Message> messages = new ArrayList<>();
-
-        // 添加系统提示（Skills 放在系统提示词中）
-        if (systemPrompt != null && !systemPrompt.isBlank()) {
-            messages.add(new SystemMessage(systemPrompt));
-        }
-
-        // 添加用户消息
-        messages.add(new UserMessage(userPrompt));
-
-        int iterations = 0;
-
-        while (iterations < MAX_FUNCTION_ITERATIONS) {
-            // 创建带函数的 Prompt
-            Prompt prompt = new Prompt(messages);
-
-            // 调用 LLM - 函数已在 ChatClient 构建时注册，无需再次指定
-            ChatResponse chatResponse = chatClient.prompt(prompt)
-                    .call()
-                    .chatResponse();
-
-            String content = chatResponse.getResult().getOutput().getContent();
-
-            // 检查是否有函数调用请求（通过检查响应中的 tool calls）
-            // Spring AI 会自动处理函数调用，我们只需要检查是否需要继续
-            if (content != null && !content.isBlank()) {
-                // 提取 token 统计
-                return extractLLMResponse(chatResponse, content);
-            }
-
-            iterations++;
-            log.debug("Function call iteration: {}", iterations);
-        }
-
-        // 超过最大迭代次数，返回空响应
-        return new LLMResponse("达到最大函数调用次数限制", null, null, null);
-    }
-
-    /**
      * 从 ChatResponse 提取 LLMResponse
      */
     private LLMResponse extractLLMResponse(ChatResponse chatResponse, String content) {
@@ -395,20 +335,8 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
 
         String content = chatResponse.getResult().getOutput().getContent();
 
-        // 提取token统计
-        var metadata = chatResponse.getMetadata();
-        Integer inputTokens = null;
-        Integer outputTokens = null;
-        Integer totalTokens = null;
-
-        if (metadata != null && metadata.getUsage() != null) {
-            var usage = metadata.getUsage();
-            inputTokens = usage.getPromptTokens() != null ? usage.getPromptTokens().intValue() : null;
-            outputTokens = usage.getGenerationTokens() != null ? usage.getGenerationTokens().intValue() : null;
-            totalTokens = usage.getTotalTokens() != null ? usage.getTotalTokens().intValue() : null;
-        }
-
-        return new LLMResponse(content, inputTokens, outputTokens, totalTokens);
+        // 统一走 extractLLMResponse 提取 token 统计（与其它调用路径一致）
+        return extractLLMResponse(chatResponse, content);
     }
     
     /**
@@ -457,9 +385,9 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
         LLMNodeConfig config = new LLMNodeConfig();
 
         // 优先使用全局配置
-        Long configId = data.get("configId") != null
-                ? ((Number) data.get("configId")).longValue()
-                : null;
+        // 说明：configId 可能来自前端表单/JSON 反序列化，类型不一定是 Number
+        // （例如字符串 "3"），强转 Number 会抛 ClassCastException，这里统一安全解析。
+        Long configId = longData(data, "configId");
 
         if (configId != null) {
             LLMGlobalConfig globalConfig = llmGlobalConfigService.getById(configId);
@@ -500,9 +428,24 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
     }
 
     private double resolveNodeTemperature(Map<String, Object> data) {
-        return data.get("temperature") != null
-                ? ((Number) data.get("temperature")).doubleValue()
-                : 0.7;
+        // 温度同样可能以字符串形式配置（"0.5"），复用安全解析避免强转 CCE
+        return doubleData(data, "temperature", 0.7);
+    }
+
+    /** 安全解析 Long（Number 或可解析字符串；非法值返回 null）。 */
+    private Long longData(Map<String, Object> data, String key) {
+        Object value = data.get(key);
+        if (value instanceof Number number) {
+            return number.longValue();
+        }
+        if (value instanceof String text && !text.isBlank()) {
+            try {
+                return Long.parseLong(text.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 
     private void validateResolvedConfig(LLMNodeConfig config) {
@@ -555,29 +498,47 @@ public abstract class AbstractLLMNodeExecutor implements NodeExecutor {
     }
     
     /**
-     * 构建输出结果
+     * 构建节点输出。
+     *
+     * <p>LLM 节点只产出一段文本，因此这里的语义是：
+     * <ul>
+     *   <li>始终写入通用字段 {@code output}——保证下游以 {@code nodeId.output} 的引用
+     *       在配置了 outputParams 时同样可用（修复前一旦配置 outputParams 就不再暴露
+     *       {@code output}，下游通用引用会静默取空）；</li>
+     *   <li>outputParams 中声明的每个名字映射同一段文本，即「命名别名」语义，
+     *       供下游以 {@code nodeId.<name>} 引用该节点产出；</li>
+     *   <li>跳过名字为空/空白以及重名 {@code output} 的参数，避免写入 null key
+     *       污染输出与 JSON 序列化。</li>
+     * </ul>
+     * 说明：单段文本无法拆出语义不同的多个值，因此不做「按名字取 JSON 字段」的隐式拆解——
+     * 那属于结构化输出能力，需产品侧显式开启模型 JSON 模式，不在本方法内兜底猜测。
      */
     @SuppressWarnings("unchecked")
     protected Map<String, Object> buildOutput(LLMResponse llmResponse, List<Map<String, Object>> outputParams) {
-        Map<String, Object> output = new HashMap<>();
-        
+        Map<String, Object> output = new LinkedHashMap<>();
+
         String content = llmResponse.getContent();
-        
-        if (outputParams != null && !outputParams.isEmpty()) {
+
+        // 通用输出：无论是否声明 outputParams 都暴露，保证下游引用行为一致
+        output.put("output", content);
+
+        if (outputParams != null) {
             for (Map<String, Object> param : outputParams) {
-                String paramName = (String) param.get("name");
+                Object rawName = param.get("name");
+                String paramName = rawName == null ? null : String.valueOf(rawName).trim();
+                if (paramName == null || paramName.isEmpty() || "output".equals(paramName)) {
+                    continue;
+                }
                 output.put(paramName, content);
             }
-        } else {
-            output.put("output", content);
         }
-        
+
         // 添加token统计
         output.put("inputTokens", llmResponse.getInputTokens());
         output.put("outputTokens", llmResponse.getOutputTokens());
         output.put("totalTokens", llmResponse.getTotalTokens());
         output.put("tokens", llmResponse.getTotalTokens()); // 保持向后兼容
-        
+
         return output;
     }
     
