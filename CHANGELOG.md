@@ -1,6 +1,38 @@
 # 版本说明 / Changelog
 
-本文件汇总 PaiAgent 各发布版本的变更说明。对应 Git 标签（`v2.0.0`～`v2.3.0`）均已推送到 `origin`，可在 GitHub 的 Tags / Releases 页面查看每条标签自带的说明。
+本文件汇总 PaiAgent 各发布版本的变更说明。对应 Git 标签（`v2.0.0`～`v2.4.0`）均已推送到 `origin`，可在 GitHub 的 Tags / Releases 页面查看每条标签自带的说明。
+
+---
+
+## v2.4.0 — 迭代9：全仓评审修复（2026-10-16）
+
+依据 `docs/全仓代码评审报告.md` 第九章（第 3 轮审议）清单逐项闭环，处置记录见该报告新增的第十章。
+
+**🔴 高危：租户/用户隔离主线闭合到末端**
+- **记忆工具归属击穿**：`MemoryRetrieveTool` / `MemoryWriteTool` 的输入 schema 中**整体移除** `userId/sessionId/tenantId`——原先这三个身份字段由模型入参直传，提示注入即可读写他人 / 他租户记忆。现改为服务端投影（`UserContext` / `TenantContext`），会话维度由 `AgentToolContext` 派生（`exec:<id>` / `wf:<id>`），模型无法再伪造。
+- **执行快照 / 变量越权**：`ExecutionController.getExecutionSnapshots` / `getExecutionVariables` 在 `flowId` 比对**之前**补 `getOwnedWorkflow`，越权请求不再触达快照查询。
+- **知识库运行时路径无归属**：新增 `requireBaseForRuntime` 统一入口（兼容 `owner IS NULL` 的历史数据），`resolveBaseForRuntime` 的 id / name / 默认库三处查询补 `in(getOwner, visibleOwners())`，`listDocuments` / `searchRuntime` / `refreshBaseStats` 全部改走归属校验。
+- **默认弱口令静默上线**：`application.yml` 默认**留空即禁用**；`ConfigValidationRunner` 在口令短于 8 位或命中弱口令字典（含 `admin123`）时抛异常拒绝启动。`.env.example` 与 `README.md` / `backend/README.md` / `AGENTS.md` 一并停止下发可用口令，并新增仓库级守卫测试。
+
+**🟡 中危**
+- **LLM 客户端零超时** → `ChatClientFactory` 注入 10s 连接 / 120s 读取超时（`SimpleClientHttpRequestFactory`），消除半开连接永久占用线程池 worker 的风险。
+- **MCP 启动命令用户可控** → 新增 `McpCommandValidator`（启动器白名单 + shell 元字符拒绝 + 路径与 `.exe/.cmd/.bat/.ps1` 归一化，可用 `PAIAGENT_MCP_ALLOWED_COMMANDS` 扩展），写入侧与执行侧**双重校验**。
+- **TTS / MinIO 绕过 SSRF 校验** → `SafeHttpFetcher` 抽出 `fetchBytes`：逐跳安全校验 + 声明长度与实际长度双重上限，**超限显式抛错**（二进制静默截断会产出损坏文件）；`callStepTts` 端点补 `UrlSafetyValidator`。
+- **审批声明被等级分支吞掉** → `ToolGateway` 判定改为 `requiresApproval || (等级越限 && ESCALATE)`。
+- **幂等非原子** → `IdempotencyGuard` 新增 `tryClaim`（进程内 `putIfAbsent` + Redis `SETNX`）与 `release`，网关执行前原子占位、失败归还，消除 check-then-act。
+- **上下文不传播** → `ParallelDAGScheduler` 与 `HitlResumeService` 显式投影调用方用户 / 租户上下文，并在 `finally` 清理，防线程池复用串扰。
+- **RAG 与日志** → `DenseRetriever` 把索引与元数据合并为单一 `Bucket`（`computeIfAbsent` 天然原子）；`Bm25Retriever.dfCache` 加 2 万条上限；MyBatis `log-impl` 由 `StdOutImpl` 改为 `Slf4jImpl`（SQL 与绑定参数不再直吐 stdout）。
+
+**本轮修复过程中新发现的 3 处缺陷**
+1. `IdempotencyGuard.tryClaim` 跨实例占位失效：原先「内存抢到但 Redis 已被他人持有」时仍放行，等于让 `SETNX` 对跨实例幂等形同虚设；改为 Redis 明确返回 `false` 即拒绝并撤销本地占位，仅 Redis 抛异常（不可用）时才降级为进程内判定。
+2. 仓库示例配置与文档仍下发 `admin/admin123`，叠加新的 fail-fast 会让文档化的本地启动流程直接失败；已一并收口。
+3. `DenseRetriever.invalidate` 前缀误伤：`invalidate(1)` 会连带清掉 `10:dimN` 的桶，随重写消除。
+
+**⚠️ 升级注意**
+- 默认管理员账户不再自动启用：需自行设置 `APP_AUTH_DEFAULT_USERNAME` / `APP_AUTH_DEFAULT_PASSWORD`（强口令，≥8 位且不在弱口令字典内），两个都留空即禁用。
+- `application.yml` 此前被本地 `skip-worktree` 标记屏蔽，长期未纳入版本管理，本次一并修正。
+
+**质量门**：全量 **491** 项测试通过（428 → +63）。
 
 ---
 
