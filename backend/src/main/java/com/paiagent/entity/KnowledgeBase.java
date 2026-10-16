@@ -21,6 +21,12 @@ public class KnowledgeBase {
 
     private String description;
 
+    /**
+     * 资源归属（迭代7 · 评审报告 A2）：登录用户名。
+     * 列表/详情/写入均按此隔离，防止跨用户访问；系统内部创建的资源归 "system"。
+     */
+    private String owner;
+
     private Long configId;
 
     private String embeddingModel;

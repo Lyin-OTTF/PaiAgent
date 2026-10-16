@@ -39,7 +39,7 @@ public class PromptTemplateService {
         log.debug("参数值映射: {}", paramValues);
         
         // 替换模板变量
-        return replaceTemplateVariables(promptTemplate, paramValues);
+        return replaceVariables(promptTemplate, paramValues);
     }
     
     /**
@@ -117,7 +117,7 @@ public class PromptTemplateService {
     }
     
     /**
-     * 替换模板中的 {{variable}} 变量。
+     * 替换模板中的 {{variable}} 变量（迭代7：抽出为静态工具方法，供多个执行器复用）。
      *
      * <p>用 {@link Matcher#appendReplacement} 单遍替换：
      * <ul>
@@ -129,14 +129,21 @@ public class PromptTemplateService {
      *   <li>用 {@link Matcher#quoteReplacement} 转义，参数值含 {@code $} / {@code \}
      *       时不会被当成替换分组引用而损坏内容。</li>
      * </ul>
+     *
+     * <p>抽为 {@code public static} 的目的：输出节点等执行器此前各自复制了一份替换逻辑，
+     * 于是同一个「带空格占位符」缺陷在多处重复出现；统一委托本方法后修一处即全局生效。
      */
-    private String replaceTemplateVariables(String template, Map<String, String> paramValues) {
+    public static String replaceVariables(String template, Map<String, String> paramValues) {
+        if (template == null || template.isEmpty()) {
+            return "";
+        }
+        Map<String, String> values = paramValues != null ? paramValues : Map.of();
         Matcher matcher = TEMPLATE_PATTERN.matcher(template);
         StringBuilder result = new StringBuilder();
         
         while (matcher.find()) {
             String paramName = matcher.group(1).trim();
-            String paramValue = paramValues.get(paramName);
+            String paramValue = values.get(paramName);
             matcher.appendReplacement(result, Matcher.quoteReplacement(paramValue == null ? "" : paramValue));
         }
         matcher.appendTail(result);

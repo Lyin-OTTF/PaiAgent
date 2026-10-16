@@ -33,30 +33,9 @@ public class NodeDefinitionService extends ServiceImpl<NodeDefinitionMapper, Nod
         this.list().forEach(node -> nodeDefinitionMap.put(node.getNodeType(), node));
 
         nodeDefinitionMap.putIfAbsent("llm", createGenericLlmNodeDefinition());
-        nodeDefinitionMap.putIfAbsent("memory_write", createNodeDefinition(
-                "memory_write", "写入记忆", "MEMORY", "MW",
-                "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"memoryId\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\"},\"stored\":{\"type\":\"boolean\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"configId\":{\"type\":\"number\"},\"content\":{\"type\":\"string\"},\"memoryType\":{\"type\":\"string\",\"default\":\"fact\"},\"tags\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"default\":\"workflow\"}}}"
-        ));
-        nodeDefinitionMap.putIfAbsent("memory_retrieve", createNodeDefinition(
-                "memory_retrieve", "召回记忆", "MEMORY", "MR",
-                "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"memories\":{\"type\":\"array\"},\"context\":{\"type\":\"string\"},\"citations\":{\"type\":\"array\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"configId\":{\"type\":\"number\"},\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"default\":\"workflow\"},\"topK\":{\"type\":\"number\",\"default\":5},\"tags\":{\"type\":\"string\"}}}"
-        ));
-        nodeDefinitionMap.putIfAbsent("knowledge_upsert", createNodeDefinition(
-                "knowledge_upsert", "写入知识库", "KNOWLEDGE", "KU",
-                "{\"type\":\"object\",\"properties\":{\"content\":{\"type\":\"string\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"knowledgeBaseId\":{\"type\":\"string\"},\"contentId\":{\"type\":\"string\"},\"chunkCount\":{\"type\":\"number\"},\"indexed\":{\"type\":\"boolean\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"configId\":{\"type\":\"number\"},\"knowledgeBaseId\":{\"type\":\"string\"},\"content\":{\"type\":\"string\"},\"sourceUrl\":{\"type\":\"string\"},\"title\":{\"type\":\"string\"},\"tags\":{\"type\":\"string\"}}}"
-        ));
-        nodeDefinitionMap.putIfAbsent("knowledge_retrieve", createNodeDefinition(
-                "knowledge_retrieve", "检索知识库", "KNOWLEDGE", "KR",
-                "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"chunks\":{\"type\":\"array\"},\"citations\":{\"type\":\"array\"},\"context\":{\"type\":\"string\"}}}",
-                "{\"type\":\"object\",\"properties\":{\"configId\":{\"type\":\"number\"},\"knowledgeBaseId\":{\"type\":\"string\"},\"query\":{\"type\":\"string\"},\"topK\":{\"type\":\"number\",\"default\":5},\"scoreThreshold\":{\"type\":\"number\",\"default\":0.2}}}"
-        ));
+        // 迭代7：原先还注入了 memory_write / memory_retrieve / knowledge_upsert / knowledge_retrieve，
+        // 但这四个类型同时在 HIDDEN_STANDALONE_AGENT_NODE_TYPES 中，注入后会被下方过滤立即剔除，
+        // 属不可达死代码（库中亦无种子行），故删除；这些节点仅作为 Agent 模式工具在 LLM 节点内配置。
         nodeDefinitionMap.putIfAbsent("image_generate", createNodeDefinition(
                 "image_generate", "图片生成", "TOOL", "IMG",
                 "{\"type\":\"object\",\"properties\":{\"prompt\":{\"type\":\"string\"}}}",

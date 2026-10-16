@@ -1,24 +1,33 @@
 package com.paiagent.engine.agent.tool;
 
+import com.paiagent.common.SafeHttpFetcher;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
 import com.paiagent.engine.agent.policy.AutonomyLevel;
 import com.paiagent.engine.agent.policy.ToolPolicy;
 import org.springframework.stereotype.Component;
 
-import java.net.URI;
-import java.net.URLConnection;
-import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 网页读取工具（LLM 可直接调用）。
+ *
+ * <p>迭代7（评审报告 A4 边界闭合）：修复前与 {@code WebFetchNodeExecutor} 各自实现抓取，
+ * 安全加固只补了节点执行器，本工具的 {@code openConnection().readAllBytes()} 仍可被模型
+ * 诱导访问内网/云元数据（无协议校验、自动跟随重定向、无大小上限）。现统一收敛到
+ * {@link SafeHttpFetcher}：逐跳安全校验 + 超时 + 限长。
+ */
 @Component
 @ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class WebFetchTool implements AgentTool {
 
     private static final int MAX_PAGE_CHARS = 8000;
+    private static final int MAX_BYTES = 1024 * 1024;
+    private static final int CONNECT_TIMEOUT_MS = 8000;
+    private static final int READ_TIMEOUT_MS = 15000;
 
     @Override
     public String getName() {
@@ -45,11 +54,7 @@ public class WebFetchTool implements AgentTool {
         List<Map<String, Object>> pages = new ArrayList<>();
         StringBuilder content = new StringBuilder();
         for (String url : urls) {
-            URLConnection connection = URI.create(url).toURL().openConnection();
-            connection.setConnectTimeout(8000);
-            connection.setReadTimeout(15000);
-            connection.setRequestProperty("User-Agent", "PaiAgent-one/1.0");
-            String text = new String(connection.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+            String text = SafeHttpFetcher.fetchText(url, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, MAX_BYTES);
             String truncated = text.length() > MAX_PAGE_CHARS ? text.substring(0, MAX_PAGE_CHARS) : text;
 
             Map<String, Object> page = new LinkedHashMap<>();

@@ -35,10 +35,20 @@ class SensitiveDataMaskerTest {
 
     @Test
     void masksBankCard() {
-        String input = "卡号 6222021234567890123 入账";
+        // 迭代7（评审报告 #11）：银行卡候选须通过 Luhn 校验，此处用真实合法卡号形态
+        String input = "卡号 6222021234567890128 入账";
         String masked = masker.mask(input);
-        assertTrue(masked.contains("6222****0123"));
-        assertFalse(masked.contains("6222021234567890123"));
+        assertTrue(masked.contains("6222****0128"));
+        assertFalse(masked.contains("6222021234567890128"));
+    }
+
+    @Test
+    void doesNotMaskNonCardLongNumber() {
+        // 15–19 位但与银行卡无关的订单号/流水号（不满足 Luhn）不得被打码，
+        // 修复前 \d{15,19} 会误伤，污染记忆检索。
+        String input = "订单号 6222021234567890123 已支付";
+        String masked = masker.mask(input);
+        assertTrue(masked.contains("6222021234567890123"), "非银行卡号不应被打码");
     }
 
     @Test

@@ -18,7 +18,9 @@ public final class RrfFusion {
     /**
      * @param routes 各路的排序结果（已按该路分数降序）
      * @param k      平滑常数，越大路间差异越被压缩；60 为论文常用值
-     * @return 元素 -> 融合分；同一路内重复元素只按首次出现计
+     * @return 元素 -&gt; 融合分；同一路内若出现重复元素会各自按名次累加
+     *         （迭代7：修正注释与实现不一致的描述——实现走 {@code merge(.., Double::sum)}，
+     *         并非「只按首次出现计」；当前各路输入均为去重 id 列表，该分支不会触发）
      */
     public static <T> Map<T, Double> fuse(List<? extends List<? extends T>> routes, int k) {
         Map<T, Double> scores = new LinkedHashMap<>();

@@ -1,6 +1,8 @@
 package com.paiagent.service;
 
 import com.alibaba.fastjson2.JSON;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
 import com.paiagent.engine.WorkflowConfigParser;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
@@ -19,6 +21,8 @@ import com.paiagent.entity.Workflow;
 import com.paiagent.mapper.ApprovalRecordMapper;
 import com.paiagent.mapper.ExecutionRecordMapper;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -48,6 +52,16 @@ import static org.mockito.Mockito.*;
  * </ul>
  */
 class HitlResumeServiceTest {
+
+    /**
+     * 迭代7 B1：补执行前会用 LambdaUpdateWrapper 原子抢占执行权；
+     * 纯单元测试没有 Spring/MyBatis 容器，需手动初始化实体的 lambda 缓存。
+     */
+    @BeforeAll
+    static void initTableInfoCache() {
+        MapperBuilderAssistant assistant = new MapperBuilderAssistant(new MybatisConfiguration(), "");
+        TableInfoHelper.initTableInfo(assistant, ApprovalRecord.class);
+    }
 
     private static final Long APPROVAL_ID = 42L;
     private static final Long EXECUTION_ID = 100L;
@@ -98,6 +112,10 @@ class HitlResumeServiceTest {
         executionMapper = mock(ExecutionRecordMapper.class);
         workflowService = mock(WorkflowService.class);
         ledgerService = mock(ActionLedgerService.class);
+
+        // 迭代7 B1：补执行前会原子抢占执行权（resumeStatus: NULL → RESUMING），
+        // 这里让条件更新恒成功 = 本次抢到执行权；「已被处理」的用例在抢占前就会返回。
+        lenient().when(approvalMapper.update(any(), any())).thenReturn(1);
 
         // 真实审批服务（isApproved 判定来源）+ 真实网关 + 真实幂等守卫（Redis mock 等价进程内）
         approvalService = new ApprovalService(approvalMapper, ledgerService);
@@ -228,6 +246,20 @@ class HitlResumeServiceTest {
         service.doResume(APPROVAL_ID);
 
         assertEquals(0, writeTool.calls.get());
+        verify(approvalMapper, never()).updateById(any());
+    }
+
+    @Test
+    @DisplayName("迭代7 B1：抢占失败（已被其它执行者处理）时不重复补执行")
+    void shouldSkipWhenResumeClaimFails() {
+        stubHappyPath();
+        // 条件更新影响行数 0 = 抢占失败，说明 resumeStatus 已被别处置位
+        when(approvalMapper.update(any(), any())).thenReturn(0);
+        when(approvalMapper.selectById(APPROVAL_ID)).thenReturn(approvedApproval());
+
+        service.doResume(APPROVAL_ID);
+
+        assertEquals(0, writeTool.calls.get(), "抢占失败必须跳过，避免重复产生副作用");
         verify(approvalMapper, never()).updateById(any());
     }
 

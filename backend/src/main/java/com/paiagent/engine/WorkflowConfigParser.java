@@ -20,8 +20,28 @@ public class WorkflowConfigParser {
     private static final String REACT_FLOW_NODE_TYPE = "workflow";
 
     public WorkflowConfig parse(String flowData) {
-        JSONObject root = JSON.parseObject(flowData);
         WorkflowConfig config = new WorkflowConfig();
+        // 迭代7 A9：空输入此前会让 parseObject 返回 null，随后 root.getJSONArray 抛 NPE
+        if (flowData == null || flowData.isBlank()) {
+            config.setNodes(new ArrayList<>());
+            config.setEdges(new ArrayList<>());
+            return config;
+        }
+
+        JSONObject root;
+        try {
+            root = JSON.parseObject(flowData);
+        } catch (Exception e) {
+            // 迭代7 A9：非法 JSON 不再以未捕获异常冒出，统一转成带上下文的业务异常，
+            // 便于上层（Controller/全局异常处理）返回可读错误
+            throw new IllegalArgumentException("工作流配置不是合法 JSON: " + e.getMessage(), e);
+        }
+        if (root == null) {
+            config.setNodes(new ArrayList<>());
+            config.setEdges(new ArrayList<>());
+            return config;
+        }
+
         config.setNodes(parseNodes(root.getJSONArray("nodes")));
         config.setEdges(parseEdges(root.getJSONArray("edges")));
         return config;
@@ -34,7 +54,10 @@ public class WorkflowConfigParser {
         }
 
         for (Object item : array) {
-            JSONObject json = (JSONObject) item;
+            // 迭代7 A9：节点项非对象时跳过，避免 (JSONObject) 强转抛 ClassCastException
+            if (!(item instanceof JSONObject json)) {
+                continue;
+            }
             JSONObject dataJson = json.getJSONObject("data");
             WorkflowNode node = new WorkflowNode();
             node.setId(json.getString("id"));
@@ -71,7 +94,10 @@ public class WorkflowConfigParser {
         }
 
         for (Object item : array) {
-            JSONObject json = (JSONObject) item;
+            // 迭代7 A9：边项非对象时跳过，避免 (JSONObject) 强转抛 ClassCastException
+            if (!(item instanceof JSONObject json)) {
+                continue;
+            }
             WorkflowEdge edge = new WorkflowEdge();
             edge.setId(json.getString("id"));
             edge.setSource(json.getString("source"));

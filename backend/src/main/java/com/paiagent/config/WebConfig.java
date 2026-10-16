@@ -49,14 +49,13 @@ public class WebConfig implements WebMvcConfigurer {
                 .addPathPatterns("/api/**")
                 .excludePathPatterns("/api/auth/login", "/api/auth/refresh", "/api/auth/current", "/api/node-types", "/swagger-ui/**", "/v3/api-docs/**");
 
-        // 租户投影（迭代6）：执行入口解析 X-Tenant-Id 写入 TenantContext，
+        // 租户投影（迭代6）：从 X-Tenant-Id 请求头解析租户写入 TenantContext，
         // 使 ToolGateway 跨租户校验与 ActionLedger 租户记录真实生效。
         // 顺序在 authInterceptor 之后：仅对已认证请求投影。
-        // 路径修正：执行入口在 ExecutionController（@RequestMapping("/api/workflows")）下，
-        // 旧路径 /api/executions/** 无任何 Controller 命中，投影实际不生效；
-        // /api/workflows/** 覆盖 execute / execute/stream / resume 全部执行族端点，
-        // 读端点投影仅写 ThreadLocal，无副作用。
+        // 迭代7 修正（评审报告中危项）：覆盖范围从 /api/workflows/** 扩大到全部业务接口——
+        // 修复前知识库/LLM 配置/MCP/治理等接口都拿不到租户上下文，隔离链路半途而废；
+        // 投影本身只写 ThreadLocal，对读接口无副作用。
         registry.addInterceptor(tenantProjectionInterceptor)
-                .addPathPatterns("/api/workflows/**");
+                .addPathPatterns("/api/**");
     }
 }

@@ -16,6 +16,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
@@ -88,7 +89,11 @@ public class AgentMemoryService {
 
     /**
      * 分层写入：落库 MySQL，易失层额外写入 Redis，并返回写入摘要。
+     *
+     * <p>迭代7（报告中危项 12）：补事务边界——记忆主表与向量表是两次写入，
+     * 需原子化，否则向量写入失败会留下「无法被语义检索命中」的孤儿记忆。
      */
+    @Transactional
     public Map<String, Object> write(MemoryWriteRequest req) {
         MemoryScope ms = MemoryScope.from(req.getScope());
 

@@ -5,7 +5,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.bsc.langgraph4j.StateGraph;
 import org.bsc.langgraph4j.state.AgentState;
 
-import java.util.HashMap;
 import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -13,6 +12,10 @@ import static org.junit.jupiter.api.Assertions.*;
 /**
  * LangGraph4j 基础功能测试
  * 验证 LangGraph4j 依赖是否正确加载
+ *
+ * <p>迭代7：原先的 3 个 WorkflowState 用例随该遗留模型一并删除——
+ * WorkflowState 在生产代码中零调用（LangGraph 引擎统一走 Map 状态），
+ * 其测试只是自测自，属死代码清理范围。
  */
 @SpringBootTest(properties = {
         "paiagent.auth.jwt-secret=test-jwt-secret-key-for-spring-context-123456",
@@ -25,49 +28,6 @@ import static org.junit.jupiter.api.Assertions.*;
         "spring.datasource.password=${MYSQL_PASSWORD:1234}"
 })
 class LangGraphBasicTest {
-    
-    @Test
-    void testWorkflowStateCreation() {
-        // 测试 WorkflowState 创建
-        WorkflowState state = new WorkflowState();
-        state.setInputData("test input");
-        state.setStartTime(System.currentTimeMillis());
-        
-        assertEquals("test input", state.getInputData());
-        assertEquals("RUNNING", state.getStatus());
-        assertNotNull(state.getStartTime());
-    }
-    
-    @Test
-    void testWorkflowStateNodeOutput() {
-        WorkflowState state = new WorkflowState();
-        
-        // 更新节点输出
-        Map<String, Object> output1 = new HashMap<>();
-        output1.put("result", "node1 result");
-        state.updateNodeOutput("node1", output1, "SUCCESS");
-        
-        // 验证节点输出
-        Map<String, Object> retrieved = state.getNodeOutput("node1");
-        assertNotNull(retrieved);
-        assertEquals("node1 result", retrieved.get("result"));
-        assertEquals("node1", state.getCurrentNodeId());
-    }
-    
-    @Test
-    void testWorkflowStatePreviousOutput() {
-        WorkflowState state = new WorkflowState();
-        
-        // 添加节点输出
-        Map<String, Object> output1 = new HashMap<>();
-        output1.put("data", "value1");
-        state.updateNodeOutput("node1", output1, "SUCCESS");
-        
-        // 获取前一个节点输出
-        Map<String, Object> previous = state.getPreviousNodeOutput();
-        assertNotNull(previous);
-        assertEquals("value1", previous.get("data"));
-    }
     
     @Test
     void testLangGraphDependency() throws Exception {

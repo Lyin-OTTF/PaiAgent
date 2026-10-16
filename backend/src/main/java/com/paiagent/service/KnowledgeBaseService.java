@@ -3,6 +3,7 @@ package com.paiagent.service;
 import com.alibaba.fastjson2.JSON;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.paiagent.common.UserContext;
 import com.paiagent.dto.KnowledgeBaseRequest;
 import com.paiagent.dto.KnowledgePreviewRequest;
 import com.paiagent.dto.KnowledgeSearchRequest;
@@ -68,7 +69,9 @@ public class KnowledgeBaseService {
     }
 
     public List<Map<String, Object>> listKnowledgeBases() {
+        // 迭代7 A2：只返回「本人 + system」的知识库，修复跨用户可见
         return knowledgeBaseMapper.selectList(new LambdaQueryWrapper<KnowledgeBase>()
+                        .in(KnowledgeBase::getOwner, visibleOwners())
                         .orderByDesc(KnowledgeBase::getUpdatedAt))
                 .stream()
                 .map(this::toBaseMap)
@@ -109,6 +112,8 @@ public class KnowledgeBaseService {
         base.setChunkSize(normalizeChunkSize(request.getChunkSize()));
         base.setChunkOverlap(normalizeChunkOverlap(request.getChunkOverlap(), base.getChunkSize()));
         base.setStatus("DRAFT");
+        // 迭代7 A2：写入归属（工作流运行时自动创建的默认知识库归 system）
+        base.setOwner(UserContext.currentOwner());
         base.setDocumentCount(0);
         base.setChunkCount(0);
         base.setCharCount(0L);
@@ -259,7 +264,8 @@ public class KnowledgeBaseService {
                 log.warn("Hybrid retrieve failed (base={}), fallback to legacy scan: {}", baseId, e.getMessage());
             }
         }
-        KnowledgeBase base = requireBase(baseId);
+        // 运行时路径（工作流节点/检索降级）：执行线程无用户上下文，只做存在性校验
+        KnowledgeBase base = requireBaseUnscoped(baseId);
         List<Double> queryEmbedding = List.of();
         try {
             ResolvedAgentPlanConfig config = configResolver.resolveKnowledgeConfig(base.getConfigId(), base.getEmbeddingModel());
@@ -272,6 +278,13 @@ public class KnowledgeBaseService {
         return retrieve(String.valueOf(base.getId()), query, queryEmbedding, topK, scoreThreshold);
     }
 
+    /**
+     * 运行时写入（工作流节点调用）：文档 + 分片多表写入。
+     *
+     * <p>迭代7（报告中危项 12）：补事务边界——原先无事务，中途失败会留下
+     * 「文档已建、分片只写一半」的半写状态。
+     */
+    @Transactional
     public Map<String, Object> upsert(String knowledgeBaseId, String title, String content,
                                       String sourceUrl, List<String> tags, List<Double> embedding,
                                       String embeddingModel) {
@@ -390,7 +403,7 @@ public class KnowledgeBaseService {
     private KnowledgeBase resolveBaseForRuntime(String knowledgeBaseId, String embeddingModel) {
         if (StringUtils.hasText(knowledgeBaseId) && !"default".equalsIgnoreCase(knowledgeBaseId.trim())) {
             try {
-                return requireBase(Long.parseLong(knowledgeBaseId.trim()));
+                return requireBaseUnscoped(Long.parseLong(knowledgeBaseId.trim()));
             } catch (NumberFormatException ignored) {
                 KnowledgeBase named = knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBase>()
                         .eq(KnowledgeBase::getName, knowledgeBaseId.trim())
@@ -411,7 +424,7 @@ public class KnowledgeBaseService {
         request.setDescription("工作流运行时自动写入的默认知识库");
         request.setEmbeddingModel(embeddingModel);
         Map<String, Object> created = createKnowledgeBase(request);
-        return requireBase(((Number) created.get("id")).longValue());
+        return requireBaseUnscoped(((Number) created.get("id")).longValue());
     }
 
     private Long resolveBaseId(String knowledgeBaseId) {
@@ -419,12 +432,41 @@ public class KnowledgeBaseService {
         return base.getId();
     }
 
+    /**
+     * 取知识库并校验归属（迭代7 A2）：管理路径（用户 HTTP 调用）使用。
+     * 不存在或不属于当前用户都视为不存在——有意不区分 404/403，避免探测他人资源。
+     */
     private KnowledgeBase requireBase(Long id) {
+        KnowledgeBase base = knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBase>()
+                .eq(KnowledgeBase::getId, id)
+                .in(KnowledgeBase::getOwner, visibleOwners()));
+        if (base == null) {
+            throw new IllegalArgumentException("知识库不存在或无权访问");
+        }
+        return base;
+    }
+
+    /**
+     * 仅做存在性校验（迭代7 A2）：运行时路径（工作流节点执行、统计刷新）使用。
+     * 这些路径运行在执行线程、没有 HTTP 用户上下文，其知识库 id 来自工作流配置
+     * （属于用户对自己所配工作流的间接授权），因此不做归属过滤，避免误伤既有工作流。
+     */
+    private KnowledgeBase requireBaseUnscoped(Long id) {
         KnowledgeBase base = knowledgeBaseMapper.selectById(id);
         if (base == null) {
             throw new IllegalArgumentException("知识库不存在");
         }
         return base;
+    }
+
+    /**
+     * 可见归属集合（迭代7 A2）：本人资源 + 系统资源（与 WorkflowService 同规则）。
+     */
+    private List<String> visibleOwners() {
+        String current = UserContext.currentOwner();
+        return UserContext.SYSTEM_OWNER.equals(current)
+                ? List.of(UserContext.SYSTEM_OWNER)
+                : List.of(current, UserContext.SYSTEM_OWNER);
     }
 
     private KnowledgeDocument requireDocument(Long knowledgeBaseId, Long documentId) {
@@ -443,7 +485,8 @@ public class KnowledgeBaseService {
     }
 
     private void refreshBaseStats(Long baseId, String status) {
-        KnowledgeBase base = requireBase(baseId);
+        // 运行时统计刷新：执行线程无用户上下文，用 unscoped 版本
+        KnowledgeBase base = requireBaseUnscoped(baseId);
         Long documentCount = knowledgeDocumentMapper.selectCount(new LambdaQueryWrapper<KnowledgeDocument>()
                 .eq(KnowledgeDocument::getKnowledgeBaseId, baseId));
         Long chunkCount = knowledgeChunkMapper.selectCount(new LambdaQueryWrapper<KnowledgeChunk>()

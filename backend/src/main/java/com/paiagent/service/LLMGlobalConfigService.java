@@ -3,6 +3,7 @@ package com.paiagent.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.paiagent.common.ApiKeyMasker;
 import com.paiagent.entity.LLMGlobalConfig;
 import com.paiagent.mapper.LLMGlobalConfigMapper;
 import org.springframework.stereotype.Service;
@@ -66,6 +67,9 @@ public class LLMGlobalConfigService extends ServiceImpl<LLMGlobalConfigMapper, L
      */
     @Transactional
     public LLMGlobalConfig saveConfig(LLMGlobalConfig config) {
+        // 迭代7 A3：前端拿到的是打码后的 apiKey，未修改密钥时会原样回传掩码；
+        // 识别该情形并保留库中原值，避免把 "sk-****abcd" 当成新密钥写进数据库。
+        restoreMaskedApiKey(config);
         normalizeConfig(config);
         validateConfig(config);
         purgeDeletedDuplicate(config);
@@ -111,6 +115,27 @@ public class LLMGlobalConfigService extends ServiceImpl<LLMGlobalConfigMapper, L
         boolean sameRecord = config.getId() != null && config.getId().equals(existing.getId());
         if (!sameRecord && existing.getDeleted() != null && existing.getDeleted() == 1) {
             baseMapper.hardDeleteById(existing.getId());
+        }
+    }
+
+    /**
+     * 掩码回写保护（迭代7 A3）：入参 apiKey 是打码形态时，说明前端未修改密钥，
+     * 用库中原值覆盖，保证「展示脱敏」与「保存不丢密钥」同时成立。
+     *
+     * <p>仅更新场景（id 非空）可恢复；<b>新增场景</b>没有可恢复的原值，若放行会把
+     * {@code sk-****abcd} 这类假密钥静默落库（且接口再打码后与真实密钥无异，难以察觉），
+     * 因此显式拒绝。
+     */
+    private void restoreMaskedApiKey(LLMGlobalConfig config) {
+        if (!ApiKeyMasker.isMasked(config.getApiKey())) {
+            return;
+        }
+        if (config.getId() == null) {
+            throw new IllegalArgumentException("新增配置时 API 密钥不能使用脱敏掩码，请填写真实密钥");
+        }
+        LLMGlobalConfig existing = this.getById(config.getId());
+        if (existing != null) {
+            config.setApiKey(existing.getApiKey());
         }
     }
 

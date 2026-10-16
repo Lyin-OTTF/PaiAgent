@@ -26,6 +26,15 @@ public class DenseRetriever implements Retriever {
 
     private static final Logger log = LoggerFactory.getLogger(DenseRetriever.class);
 
+    /**
+     * 缓存桶数量上限（迭代7 · 报告 #15）。
+     *
+     * <p>{@code indexes} / {@code metadataByBucket} 原先都是无界 ConcurrentHashMap：
+     * 「知识库 × 向量维度」组合会让桶无限累积（每个桶还持有全量分片内容与向量，内存可观）。
+     * 超限时整体失效、按需重建，避免引入复杂度更高的 LRU 维护。
+     */
+    private static final int MAX_CACHED_BUCKETS = 32;
+
     private final KnowledgeChunkMapper chunkMapper;
     private final EmbeddingFunction embeddingFunction;
 
@@ -75,8 +84,21 @@ public class DenseRetriever implements Retriever {
         metadataByBucket.keySet().removeIf(key -> key.startsWith(prefix));
     }
 
+    /**
+     * 桶数量超限时整体失效（下次检索按需重建），防止内存无界增长。
+     */
+    private void evictIfOverCapacity() {
+        if (indexes.size() < MAX_CACHED_BUCKETS) {
+            return;
+        }
+        log.warn("向量索引缓存桶数已达上限 {}，整体失效后按需重建（避免内存无界增长）", MAX_CACHED_BUCKETS);
+        indexes.clear();
+        metadataByBucket.clear();
+    }
+
     private VectorIndex ensureIndex(Long knowledgeBaseId, int dimension) {
         String bucketKey = bucketKey(knowledgeBaseId, dimension);
+        evictIfOverCapacity();
         return indexes.computeIfAbsent(bucketKey, key -> {
             Map<Long, ScoredChunk> metadata = new ConcurrentHashMap<>();
             VectorIndex index = new HnswVectorIndex();

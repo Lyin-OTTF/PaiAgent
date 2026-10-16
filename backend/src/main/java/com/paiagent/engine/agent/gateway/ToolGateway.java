@@ -59,14 +59,21 @@ public class ToolGateway {
         String idemKey = buildIdempotencyKey(toolName, ctx.tenantId(), args);
 
         // 1. 跨租户校验
-        if (policy.isWrite()
-                && ctx.tenantId() != null
-                && !"global".equals(policy.scope())
-                && !"shared".equals(policy.scope())
-                && !policy.scope().equals(ctx.tenantId())) {
-            String msg = String.format("跨租户操作被拒绝：工具作用域=%s，调用方租户=%s", policy.scope(), ctx.tenantId());
-            recordLedger(ctx, toolName, policy, args, "DENIED", msg, null, null, idemKey);
-            return ToolGatewayResult.denied(msg);
+        // 迭代7（中危修复）：写操作缺失租户上下文时「拒绝」而非放行——
+        // 修复前条件含 ctx.tenantId() != null，null 租户的写调用会直接跳过校验。
+        if (policy.isWrite()) {
+            if (ctx.tenantId() == null || ctx.tenantId().isBlank()) {
+                String msg = "写操作缺少租户上下文，已拒绝";
+                recordLedger(ctx, toolName, policy, args, "DENIED", msg, null, null, idemKey);
+                return ToolGatewayResult.denied(msg);
+            }
+            if (!"global".equals(policy.scope())
+                    && !"shared".equals(policy.scope())
+                    && !policy.scope().equals(ctx.tenantId())) {
+                String msg = String.format("跨租户操作被拒绝：工具作用域=%s，调用方租户=%s", policy.scope(), ctx.tenantId());
+                recordLedger(ctx, toolName, policy, args, "DENIED", msg, null, null, idemKey);
+                return ToolGatewayResult.denied(msg);
+            }
         }
 
         // 2. 自治等级校验
@@ -74,7 +81,10 @@ public class ToolGateway {
             boolean needApproval = policy.isRequiresApproval() || policy.level() == AutonomyLevel.ESCALATE;
             // 迭代6：携带已获批审批单的调用视为「这一次特定调用已获人类预授权」，
             // 不再新建审批单，直接穿透执行（租户校验/幂等/审计不受影响）。
-            boolean preApproved = ctx.approvalId() != null && approvalService.isApproved(ctx.approvalId());
+            // 迭代7 A6：预授权还需「审批单 + 工具 + 租户」三者匹配，
+            // 否则任意一个已批准的单号都能为任意工具做穿透。
+            boolean preApproved = ctx.approvalId() != null
+                    && approvalService.isApprovedFor(ctx.approvalId(), toolName, ctx.tenantId());
             if (preApproved) {
                 log.info("工具 [{}] 凭已获批审批单 [{}] 预授权执行", toolName, ctx.approvalId());
             } else if (needApproval) {

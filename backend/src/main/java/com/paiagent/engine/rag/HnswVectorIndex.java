@@ -89,7 +89,7 @@ public class HnswVectorIndex implements VectorIndex {
             candidates.add(ep.id);
             for (int lv = Math.min(level, currentMax); lv >= 0; lv--) {
                 List<Long> beam = beamSearch(candidates, normalized, lv, EF_CONSTRUCTION);
-                for (Long neighborId : selectNeighbors(beam, normalized, M)) {
+                for (Long neighborId : selectNeighbors(id, beam, normalized, M)) {
                     node.links[lv].add(neighborId);
                     Node neighbor = nodes.get(neighborId);
                     if (neighbor == null || neighbor.level < lv) {
@@ -151,7 +151,9 @@ public class HnswVectorIndex implements VectorIndex {
 
     @Override
     public List<ScoredVector> search(float[] query, int topK) {
-        if (topK <= 0) {
+        // 迭代7（报告低危项）：补 query 空值防御——此前 topK 有校验而 query 没有，
+        // normalize(null) 会在遍历时抛 NPE。
+        if (query == null || query.length == 0 || topK <= 0) {
             return List.of();
         }
         float[] q = normalize(query);
@@ -270,9 +272,15 @@ public class HnswVectorIndex implements VectorIndex {
         return ids;
     }
 
-    private List<Long> selectNeighbors(List<Long> candidateIds, float[] q, int m) {
+    private List<Long> selectNeighbors(Long selfId, List<Long> candidateIds, float[] q, int m) {
         List<DistId> scored = new ArrayList<>(candidateIds.size());
         for (Long id : candidateIds) {
+            // 迭代7（报告 #18）：过滤自身——同 id 覆盖写时（先 remove 再 put）其它节点仍保留
+            // 指向该 id 的旧链接，beamSearch 可能经旧链接把新节点自己带回候选，
+            // 不过滤就会生成自环，劣化图质量与召回。
+            if (id == null || id.equals(selfId)) {
+                continue;
+            }
             Node node = nodes.get(id);
             if (node == null) {
                 continue;

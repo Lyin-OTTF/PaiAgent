@@ -38,7 +38,7 @@ class RagEvaluatorTest {
         // case3 视角：case2 top3={8,9,1} 命中 1/2 -> (1.0+0.5)/2 = 0.75
         assertEquals(0.75, report.recallAtK().get(3), 1e-9);
         assertEquals((1.0 + 1.0 / 3) / 2, report.mrr(), 1e-9);
-        assertEquals(2, report.hitRate());
+        assertEquals(2, report.hitCases());
         assertTrue(report.meanLatencyMs() >= 0);
     }
 
@@ -48,7 +48,7 @@ class RagEvaluatorTest {
         RagEvaluator.Report report = evaluator.evaluate(cases, (baseId, query) -> hits(1L, 2L), 5);
         assertEquals(0, report.recallAtK().get(5), 1e-9);
         assertEquals(0, report.mrr(), 1e-9);
-        assertEquals(0, report.hitRate());
+        assertEquals(0, report.hitCases());
     }
 
     @Test

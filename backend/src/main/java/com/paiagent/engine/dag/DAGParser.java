@@ -3,6 +3,7 @@ package com.paiagent.engine.dag;
 import com.paiagent.engine.model.WorkflowConfig;
 import com.paiagent.engine.model.WorkflowEdge;
 import com.paiagent.engine.model.WorkflowNode;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 
 import java.util.*;
@@ -10,7 +11,12 @@ import java.util.*;
 /**
  * DAG 解析器
  * 负责将工作流配置解析为有向无环图,并执行拓扑排序
+ *
+ * <p>迭代7（评审报告 A8）：对脏配置做防御——{@code nodes}/{@code edges} 为 null 时
+ * 按空集合处理，悬空边（引用了不存在节点）跳过并告警。修复前这两类输入都会直接
+ * NPE，而「可视化编辑器删除节点后残留连线」正是最常见的脏配置来源。
  */
+@Slf4j
 @Component
 public class DAGParser {
     
@@ -18,8 +24,8 @@ public class DAGParser {
      * 解析工作流配置,返回拓扑排序后的节点执行顺序
      */
     public List<WorkflowNode> parse(WorkflowConfig config) {
-        List<WorkflowNode> nodes = config.getNodes();
-        List<WorkflowEdge> edges = config.getEdges();
+        List<WorkflowNode> nodes = config.getNodes() != null ? config.getNodes() : List.of();
+        List<WorkflowEdge> edges = config.getEdges() != null ? config.getEdges() : List.of();
         
         // 构建节点 ID 到节点的映射
         Map<String, WorkflowNode> nodeMap = new HashMap<>();
@@ -42,6 +48,13 @@ public class DAGParser {
         for (WorkflowEdge edge : edges) {
             String source = edge.getSource();
             String target = edge.getTarget();
+            
+            // 迭代7 A8：跳过悬空边（源或目标节点不存在），避免 get() 返回 null 后 NPE
+            if (source == null || target == null
+                    || !nodeMap.containsKey(source) || !nodeMap.containsKey(target)) {
+                log.warn("忽略悬空边: {} -> {}（端点节点不存在）", source, target);
+                continue;
+            }
             
             // target 依赖 source
             dependencies.get(target).add(source);

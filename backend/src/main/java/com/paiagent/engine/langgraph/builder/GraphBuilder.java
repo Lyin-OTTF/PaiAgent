@@ -205,20 +205,22 @@ public class GraphBuilder {
             }
         }
 
-        // 入口
-        WorkflowNode entryNode = null;
+        // 入口（迭代7）：所有「无入边」的节点都接到 START。
+        // 修复前只接第一个，多源工作流的其余源节点从 START 不可达、会被静默跳过，
+        // 与 DAG 引擎的多源语义不一致。
+        List<WorkflowNode> entryNodes = new ArrayList<>();
         for (WorkflowNode node : nodes) {
             if (!hasIncoming.contains(node.getId())) {
-                entryNode = node;
-                break;
+                entryNodes.add(node);
             }
         }
-        if (entryNode != null) {
+        if (entryNodes.isEmpty() && !nodes.isEmpty()) {
+            log.warn("未找到入口节点，使用第一个节点作为入口");
+            entryNodes.add(nodes.get(0));
+        }
+        for (WorkflowNode entryNode : entryNodes) {
             log.info("设置入口节点: {}", entryNode.getId());
             graph.addEdge(StateGraph.START, entryNode.getId());
-        } else if (!nodes.isEmpty()) {
-            log.warn("未找到入口节点，使用第一个节点作为入口");
-            graph.addEdge(StateGraph.START, nodes.get(0).getId());
         }
 
         // 出口：所有终端节点都接到 END
@@ -288,7 +290,28 @@ public class GraphBuilder {
                 loopEntries.add(edge.getTarget());
             }
         }
-        return loopEntries;
+
+        // 迭代7（评审报告中危项）：同一环只保留一个守卫节点。
+        // 修复前每个回边目标都会各自装配 LoopNode 并独立计数（简单环 A↔B 因此得到
+        // 两份迭代配额），把 maxIterations 稀释成「每个节点各一份」。
+        // 这里用「互相可达」把环上节点聚类，每类只取一个代表——环上任一节点每轮都会
+        // 执行，包装其一即可正确计数。
+        Set<String> guards = new LinkedHashSet<>();
+        Set<String> assigned = new HashSet<>();
+        for (String candidate : loopEntries) {
+            if (assigned.contains(candidate)) {
+                continue;
+            }
+            guards.add(candidate);
+            for (String other : loopEntries) {
+                if (!assigned.contains(other)
+                        && canReach(adjacency, candidate, other)
+                        && canReach(adjacency, other, candidate)) {
+                    assigned.add(other);
+                }
+            }
+        }
+        return guards;
     }
 
     /** from 是否能沿有向边到达 to（from == to 时视为可达，即自环）。 */

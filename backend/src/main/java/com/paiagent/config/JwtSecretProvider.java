@@ -4,6 +4,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.env.Environment;
 import org.springframework.stereotype.Component;
 
+import java.nio.charset.StandardCharsets;
 import java.security.SecureRandom;
 import java.util.Arrays;
 import java.util.Base64;
@@ -27,6 +28,9 @@ public class JwtSecretProvider {
             "your-secret-key",
             "default-secret"
     );
+
+    /** HS256 要求的最小密钥字节数（迭代7：非本地环境做长度校验）。 */
+    private static final int MIN_SECRET_BYTES = 32;
 
     private final Environment environment;
     private final String configuredSecret;
@@ -94,6 +98,23 @@ public class JwtSecretProvider {
             generatedForLocalDevelopment = true;
             generationReason = configuredSecret.isEmpty() ? "missing" : "weak-default";
             return;
+        }
+
+        // 迭代7（评审报告 #13）：非本地环境必须显式配置足够强度的密钥，否则 fail-fast。
+        // 修复前会把空/弱密钥原样交给 JJWT，直到首次签发 Token 才抛 WeakKeyException，
+        // 错误信息与根因（配置缺失/过弱）相距很远，排查成本高。
+        if (configuredSecret.isEmpty()) {
+            throw new IllegalStateException(
+                    "未配置 paiagent.auth.jwt-secret：非本地环境必须提供至少 "
+                            + MIN_SECRET_BYTES + " 字节的随机密钥");
+        }
+        if (isConfiguredSecretWeakDefault()) {
+            throw new IllegalStateException(
+                    "paiagent.auth.jwt-secret 仍为仓库默认弱密钥：非本地环境必须替换为随机强密钥");
+        }
+        if (configuredSecret.getBytes(StandardCharsets.UTF_8).length < MIN_SECRET_BYTES) {
+            throw new IllegalStateException(
+                    "paiagent.auth.jwt-secret 长度不足 " + MIN_SECRET_BYTES + " 字节：请使用随机强密钥");
         }
 
         effectiveSecret = configuredSecret;

@@ -1,21 +1,33 @@
 package com.paiagent.config;
 
+import com.paiagent.common.UserContext;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.core.annotation.Order;
+import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Component;
 
 /**
  * Applies small idempotent schema upgrades for local/dev databases that were created before new features.
+ *
+ * <p>迭代7（评审报告 #10）：补 profile 守卫——原先任何环境启动都会尝试执行 DDL，
+ * 存在误改生产库 schema 的风险。现仅在非生产 profile 下运行；
+ * 生产部署请显式启用 {@code prod}/{@code production} profile（或用 Flyway/Liquibase 接管迁移）。
  */
 @Slf4j
 @Component
 @Order(0)
+@Profile("!prod & !production")
 public class SchemaMigrationRunner implements ApplicationRunner {
 
     private final JdbcTemplate jdbcTemplate;
+
+    /** 默认账号（用于回填历史数据的归属）；未配置时回填为 system。 */
+    @Value("${paiagent.default-username:}")
+    private String defaultUsername;
 
     public SchemaMigrationRunner(JdbcTemplate jdbcTemplate) {
         this.jdbcTemplate = jdbcTemplate;
@@ -269,6 +281,46 @@ public class SchemaMigrationRunner implements ApplicationRunner {
         // 迭代5补丁：检查点 ID 是随机 UUID，按 ID 排序无法定位最新写入，补一个自增序号列
         addColumnIfMissing("langgraph_checkpoint", "seq",
                 "ALTER TABLE langgraph_checkpoint ADD COLUMN seq BIGINT NOT NULL AUTO_INCREMENT COMMENT '自增序号，标识检查点写入顺序', ADD UNIQUE KEY uk_langgraph_checkpoint_seq (seq)");
+
+        // 迭代7（评审报告 A1/A2）：资源归属列 + 历史数据回填。
+        // 修复前 Workflow/KnowledgeBase 无归属字段，任意登录用户可读写全部资源；
+        // 补齐 owner 后，Service 层按「本人 + system」过滤（用户间严格隔离、系统资源保持共享）。
+        migrateOwnerColumn("workflow", "AFTER engine_type");
+        migrateOwnerColumn("knowledge_base", "AFTER name");
+    }
+
+    /**
+     * 幂等补齐归属列并回填历史数据（迭代7 · A1/A2）。
+     * 表不存在（如未启用 schema.sql 初始化的环境）或 DDL 失败只告警、不阻断启动。
+     */
+    private void migrateOwnerColumn(String tableName, String position) {
+        try {
+            addColumnIfMissing(tableName, "owner",
+                    "ALTER TABLE " + tableName
+                            + " ADD COLUMN owner VARCHAR(100) DEFAULT NULL COMMENT '资源归属（登录用户名）' "
+                            + position);
+            backfillOwner(tableName);
+        } catch (Exception e) {
+            log.warn("迁移 {}.owner 失败（不影响启动）: {}", tableName, e.getMessage());
+        }
+    }
+
+    /**
+     * 回填历史数据的归属列：owner 为 NULL/空的老数据归给默认账号（未配置则 system），
+     * 使「按 owner 过滤」对所有数据一致生效，不留下「人人可见」的空洞。
+     */
+    private void backfillOwner(String tableName) {
+        int updated = jdbcTemplate.update(
+                "UPDATE " + tableName + " SET owner = ? WHERE owner IS NULL OR owner = ''", resolveDefaultOwner());
+        if (updated > 0) {
+            log.info("Schema migrated: backfilled {}.owner for {} rows", tableName, updated);
+        }
+    }
+
+    private String resolveDefaultOwner() {
+        return (defaultUsername != null && !defaultUsername.isBlank())
+                ? defaultUsername.trim()
+                : UserContext.SYSTEM_OWNER;
     }
 
     private void createTableIfMissing(String tableName, String ddl) {

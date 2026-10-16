@@ -1,9 +1,12 @@
 package com.paiagent.engine.agent.policy;
 
+import lombok.extern.slf4j.Slf4j;
+
 /**
  * 工具自治等级（受限自治层核心枚举）。
  * 等级从低到高代表「干预程度」递增：等级越高，对系统状态的影响越大，越需要管控。
  */
+@Slf4j
 public enum AutonomyLevel {
     OBSERVE(0, "只读，不改变状态"),
     SUGGEST(1, "只输出建议"),
@@ -39,6 +42,9 @@ public enum AutonomyLevel {
         try {
             return AutonomyLevel.valueOf(name.trim().toUpperCase(java.util.Locale.ROOT));
         } catch (IllegalArgumentException e) {
+            // 迭代7：非法值仍然保守回落 OBSERVE，但不再静默——
+            // 否则「配置写错」会表现为「工具莫名被拒/被降级」，排查成本高。
+            log.warn("无法识别的自治等级 [{}]，保守回落为 OBSERVE", name);
             return OBSERVE;
         }
     }

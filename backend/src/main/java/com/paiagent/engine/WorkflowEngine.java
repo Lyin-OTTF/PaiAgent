@@ -167,10 +167,19 @@ public class WorkflowEngine implements WorkflowExecutor {
         Map<String, Map<String, Object>> nodeOutputs = new HashMap<>(resumeState.nodeOutputs);
         Set<String> skippedNodes = new HashSet<>(resumeState.skippedNodes);
         
-        Map<String, Object> currentInput = new HashMap<>();
-        currentInput.put("input", inputData);
-        currentInput.putAll(resumeState.latestOutput);
-        currentInput.putAll(resumeState.modifiedVariables);
+        // 迭代7（双引擎对齐）：源节点（无入边）使用的固定初始输入。
+        // 修复前兜底直接传可变的 currentInput，导致多源 DAG 的第二个源节点会错误地
+        // 拿到「第一个源节点的输出」而不是原始输入；并行路径本就使用固定 initialInput，
+        // 串行路径现与之对齐。
+        Map<String, Object> initialInput = new HashMap<>();
+        initialInput.put("input", inputData);
+        initialInput.putAll(resumeState.latestOutput);
+        initialInput.putAll(resumeState.modifiedVariables);
+
+        Map<String, Object> currentInput = new HashMap<>(initialInput);
+
+        // 迭代7：预计算「节点 → 拓扑序号」，替代逐节点的 O(n) indexOf
+        Map<String, Integer> nodeIndex = indexNodes(sortedNodes);
         
         String status = "SUCCESS";
         String errorMessage = null;
@@ -193,8 +202,8 @@ public class WorkflowEngine implements WorkflowExecutor {
                     continue;
                 }
                 
-                // 解析当前节点的输入
-                Map<String, Object> nodeInput = resolveNodeInput(node, nodeOutputs, edgesByTarget, currentInput);
+                // 解析当前节点的输入（源节点用固定初始输入，见上方注释）
+                Map<String, Object> nodeInput = resolveNodeInput(node, nodeOutputs, edgesByTarget, initialInput);
                 if (!resumeState.modifiedVariables.isEmpty()) {
                     nodeInput = new LinkedHashMap<>(nodeInput);
                     nodeInput.putAll(resumeState.modifiedVariables);
@@ -205,7 +214,8 @@ public class WorkflowEngine implements WorkflowExecutor {
                 nodeInput.put("workflowId", flowId);
                 
                 long nodeStartTime = System.currentTimeMillis();
-                ExecutionSnapshot snapshot = createOrUpdateSnapshotStart(record.getId(), flowId, node, nodeInput, sortedNodes.indexOf(node), nodeStartTime);
+                ExecutionSnapshot snapshot = createOrUpdateSnapshotStart(record.getId(), flowId, node, nodeInput,
+                        nodeIndex.getOrDefault(node.getId(), 0), nodeStartTime);
                 
                 if (eventCallback != null) {
                     eventCallback.accept(ExecutionEvent.nodeStart(node.getId(), node.getType()));
@@ -335,6 +345,8 @@ public class WorkflowEngine implements WorkflowExecutor {
                                                    ResumeState resumeState,
                                                    long startTime,
                                                    Consumer<ExecutionEvent> eventCallback) {
+        // 迭代7：预计算拓扑序号，替代逐节点的 O(n) indexOf（与串行路径同源）
+        Map<String, Integer> nodeIndex = indexNodes(sortedNodes);
         Map<String, Object> initialInput = new HashMap<>();
         initialInput.put("input", inputData);
         initialInput.putAll(resumeState.latestOutput);
@@ -353,7 +365,7 @@ public class WorkflowEngine implements WorkflowExecutor {
         NodeTaskExecutor taskExecutor = (node, input) -> {
             long nodeStartTime = System.currentTimeMillis();
             ExecutionSnapshot snapshot = createOrUpdateSnapshotStart(
-                    record.getId(), flowId, node, input, sortedNodes.indexOf(node), nodeStartTime);
+                    record.getId(), flowId, node, input, nodeIndex.getOrDefault(node.getId(), 0), nodeStartTime);
 
             if (eventCallback != null) {
                 eventCallback.accept(ExecutionEvent.nodeStart(node.getId(), node.getType()));
@@ -466,6 +478,15 @@ public class WorkflowEngine implements WorkflowExecutor {
         return resolved;
     }
 
+    /** 预计算「节点 ID → 拓扑序号」（迭代7：替代 O(n) 的 List.indexOf）。 */
+    private Map<String, Integer> indexNodes(List<WorkflowNode> sortedNodes) {
+        Map<String, Integer> index = new HashMap<>(sortedNodes.size());
+        for (int i = 0; i < sortedNodes.size(); i++) {
+            index.put(sortedNodes.get(i).getId(), i);
+        }
+        return index;
+    }
+
     private List<WorkflowEdge> flattenEdges(EdgeIndexes indexes) {
         List<WorkflowEdge> edges = new ArrayList<>();
         indexes.edgesBySource.values().forEach(edges::addAll);
@@ -498,7 +519,8 @@ public class WorkflowEngine implements WorkflowExecutor {
                                                    Map<String, Object> fallbackInput) {
         List<WorkflowEdge> incomingEdges = edgesByTarget.get(node.getId());
         if (incomingEdges == null || incomingEdges.isEmpty()) {
-            return fallbackInput;
+            // 迭代7：返回副本——调用方会往上注入执行身份等字段，不能污染共享的兜底输入
+            return new LinkedHashMap<>(fallbackInput);
         }
         Map<String, Object> resolved = new LinkedHashMap<>();
         for (WorkflowEdge edge : incomingEdges) {
@@ -508,7 +530,7 @@ public class WorkflowEngine implements WorkflowExecutor {
             }
         }
         if (resolved.isEmpty()) {
-            return fallbackInput;
+            return new LinkedHashMap<>(fallbackInput);
         }
         resolved.put("__nodeOutputs__", nodeOutputs);
         return resolved;
@@ -533,15 +555,22 @@ public class WorkflowEngine implements WorkflowExecutor {
             return;
         }
         
+        // 迭代7（双引擎对齐）：条件节点未回传分支时按 default 处理，与 LangGraph 的
+        // ConditionalRouter.resolveBranch 语义一致。修复前 null 会让每条出边都落进
+        // inactiveTargets（全部下游被跳过），与 LangGraph 走 default 的行为正好相反。
+        String effectiveBranch = (selectedBranch == null || selectedBranch.isBlank())
+                ? "default"
+                : selectedBranch;
+        
         // 收集活跃和非活跃分支的直接目标
         Set<String> activeTargets = new HashSet<>();
         Set<String> inactiveTargets = new HashSet<>();
         
         for (WorkflowEdge edge : outEdges) {
             String handle = edge.getSourceHandle();
-            if (handle != null && handle.equals(selectedBranch)) {
+            if (handle != null && handle.equals(effectiveBranch)) {
                 activeTargets.add(edge.getTarget());
-            } else if (handle == null && "default".equals(selectedBranch)) {
+            } else if (handle == null && "default".equals(effectiveBranch)) {
                 activeTargets.add(edge.getTarget());
             } else {
                 inactiveTargets.add(edge.getTarget());
