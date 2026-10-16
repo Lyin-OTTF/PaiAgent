@@ -39,7 +39,7 @@ class RagEndToEndEvaluationTest {
         // 稠密路：mock Mapper 供 DenseRetriever 懒加载，embedding 用确定性哈希向量
         KnowledgeChunkMapper chunkMapper = mock(KnowledgeChunkMapper.class);
         when(chunkMapper.selectList(any())).thenReturn(toChunks(corpus));
-        DenseRetriever dense = new DenseRetriever(chunkMapper, new HashingEmbeddingFunction());
+        DenseRetriever dense = new DenseRetriever(chunkMapper, new HashingEmbeddingFunction(), new RagProperties());
         // 融合：默认权重与参数
         HybridRetriever hybrid = new HybridRetriever(lexical, dense, new Reranker(), new RagProperties());
 

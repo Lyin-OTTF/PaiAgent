@@ -21,14 +21,25 @@ import java.util.concurrent.locks.ReentrantLock;
  *   <li>写用可重入锁而非无锁结构：本地单 JVM，写并发低，正确性优先</li>
  * </ul>
  * 参数：M=16、efConstruction=100、efSearch=64、层级衰减 mL=1/ln(M)≈0.607，与启航参考同量级。
+ *
+ * <p>迭代8（报告🟡8 后半）：新增容量上限 {@link #maxVectors}（默认 {@link #DEFAULT_MAX_VECTORS}，
+ * 可由 {@code paiagent.rag.max-vectors} 配置）——索引按知识库懒加载、全量向量常驻内存，
+ * 无上限时单桶可达百万级向量，OOM 风险不可控。超限写入显式失败而非静默驱逐：
+ * 静默丢向量会让召回率无感劣化，显式失败则可被上层（{@code HybridRetriever} 单路安全兜底）
+ * 观测并降级。
  */
 public class HnswVectorIndex implements VectorIndex {
+
+    /** 默认容量上限（向量数/桶）。 */
+    public static final int DEFAULT_MAX_VECTORS = 100_000;
 
     private static final int MAX_LEVEL = 16;
     private static final int M = 16;
     private static final int EF_CONSTRUCTION = 100;
     private static final int EF_SEARCH = 64;
     private static final double ML = 1.0 / Math.log(M);
+
+    private final int maxVectors;
 
     private record DistId(long id, double distance) {
     }
@@ -56,6 +67,18 @@ public class HnswVectorIndex implements VectorIndex {
     private final Random random = new Random(20261015L); // 固定种子：索引结构可复现，便于测试与基准对齐
     private Node entry;
 
+    /** 默认容量（{@link #DEFAULT_MAX_VECTORS}）。 */
+    public HnswVectorIndex() {
+        this(DEFAULT_MAX_VECTORS);
+    }
+
+    /**
+     * @param maxVectors 容量上限（向量数）；&lt;=0 时按 1 处理，避免配置错误导致无限增长
+     */
+    public HnswVectorIndex(int maxVectors) {
+        this.maxVectors = Math.max(1, maxVectors);
+    }
+
     @Override
     public void upsert(Long id, float[] vector) {
         if (id == null || vector == null || vector.length == 0) {
@@ -67,6 +90,12 @@ public class HnswVectorIndex implements VectorIndex {
         }
         lock.lock();
         try {
+            if (!nodes.containsKey(id) && nodes.size() >= maxVectors) {
+                // 迭代8（报告🟡8）：新 id 且已满 → 显式失败。同 id 覆盖写不放大内存，允许。
+                throw new IllegalStateException(String.format(
+                        "向量索引容量上限 %d 已满，拒绝写入 id=%d（可通过 paiagent.rag.max-vectors 调整）",
+                        maxVectors, id));
+            }
             nodes.remove(id);
             int level = randomLevel();
             Node node = new Node(id, normalized, level);

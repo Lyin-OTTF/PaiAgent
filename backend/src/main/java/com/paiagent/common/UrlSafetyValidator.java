@@ -17,11 +17,18 @@ import java.net.URI;
  *   <li>主机解析失败一律拒绝——不做「解析不了就放行」的宽松兜底。</li>
  * </ol>
  *
- * <p><b>残余风险（如实标注）</b>：这是「发起请求前」的校验，本身无法防御
- * <b>DNS 重绑定</b>（校验时解析为公网、真正连接时解析为内网）。彻底防御需固定
- * 解析结果后直连 IP 并复核 Host 头，属更重的改造。因此调用方还应配合
- * 「不自动跟随重定向 + 每一跳重新校验」，把绕过面压到最小
- * （见 {@code WebFetchNodeExecutor} 的实现）。
+ * <p><b>残余风险（迭代8 已实证并如实标注）</b>：
+ * <ul>
+ *   <li><b>DNS 重绑定窗口</b>：本校验在「发起请求前」解析一次 DNS，而连接时会再次解析，
+ *   两次解析之间（微秒~毫秒级）攻击者可借 TTL=0 的重绑定域名把连接导向内网。
+ *   「彻底防御需固定解析结果后直连 IP」的方案在本技术栈下不可行——已实测 JDK 21
+ *   {@code HttpURLConnection} 会丢弃自定义 {@code Host} 头（受限头部，回显始终为连接 authority），
+ *   直连 IP 会同时破坏 https SNI/证书校验与 CDN 虚拟主机路由，得不偿失。
+ *   因此以「校验 + 逐跳复检 + 拒绝内嵌凭证」把面压到最小；要彻底闭合需独立出口代理
+ *   （固定解析 + 按 Host 转发）或原始 socket 层实现，超出当前范围。</li>
+ *   <li>本类拒绝 URL 内嵌凭证（{@code http://user:pass@host/}）：该写法是解析器差异
+ *   （parser differential）的常用载体，且会把凭证带进日志与 Referer。</li>
+ * </ul>
  */
 public final class UrlSafetyValidator {
 
@@ -36,7 +43,7 @@ public final class UrlSafetyValidator {
      * 校验 URL 是否可安全出站。
      *
      * @param url 待校验 URL
-     * @throws IllegalArgumentException URL 非法、协议不允许或指向内网/保留地址
+     * @throws IllegalArgumentException URL 非法、协议不允许、携带用户信息或指向内网/保留地址
      */
     public static void assertSafeOutbound(String url) {
         if (url == null || url.isBlank()) {
@@ -53,6 +60,10 @@ public final class UrlSafetyValidator {
         if (scheme == null
                 || !(SCHEME_HTTP.equalsIgnoreCase(scheme) || SCHEME_HTTPS.equalsIgnoreCase(scheme))) {
             throw new IllegalArgumentException("仅允许 http/https 协议，已拒绝: " + scheme);
+        }
+
+        if (uri.getUserInfo() != null) {
+            throw new IllegalArgumentException("URL 不允许携带用户信息（user:password@）: " + uri.getUserInfo());
         }
 
         String host = uri.getHost();

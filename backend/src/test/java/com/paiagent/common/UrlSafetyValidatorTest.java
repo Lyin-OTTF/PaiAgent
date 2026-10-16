@@ -67,6 +67,15 @@ class UrlSafetyValidatorTest {
     }
 
     @Test
+    @DisplayName("拒绝 URL 内嵌凭证 user:password@（迭代8：解析器差异载体）")
+    void rejectsEmbeddedCredentials() {
+        assertThrows(IllegalArgumentException.class,
+                () -> UrlSafetyValidator.assertSafeOutbound("http://user:pass@example.com/x"));
+        assertThrows(IllegalArgumentException.class,
+                () -> UrlSafetyValidator.assertSafeOutbound("https://admin:s3cret@example.com:8443/y"));
+    }
+
+    @Test
     @DisplayName("空白、缺主机、格式非法一律拒绝")
     void rejectsMalformed() {
         assertThrows(IllegalArgumentException.class, () -> UrlSafetyValidator.assertSafeOutbound(null));
