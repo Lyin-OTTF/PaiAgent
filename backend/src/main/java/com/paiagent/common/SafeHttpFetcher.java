@@ -16,10 +16,14 @@ import java.nio.charset.StandardCharsets;
  *
  * <p>安全要点：
  * <ul>
- *   <li>每跳都经 {@link UrlSafetyValidator#assertSafeOutbound(String)} 校验（协议白名单 + 内网/环回/链路本地/保留地址黑名单）；</li>
+ *   <li>每跳都经 {@link UrlSafetyValidator#assertSafeOutbound(String)} 校验（协议白名单 + 内网/环回/链路本地/保留地址黑名单 + 拒绝内嵌凭证）；</li>
  *   <li>手动跟随重定向并逐跳复检——自动跟随可被「公网 302 → 内网」绕过起始校验；</li>
  *   <li>连接与读取超时；响应体限长读取，避免超大响应 OOM。</li>
  * </ul>
+ *
+ * <p><b>残余风险（如实标注）</b>：校验与连接之间的 DNS 重绑定窗口无法在本技术栈内彻底关闭
+ * （{@code HttpURLConnection} 不允许覆盖 Host 头，直连 IP 会破坏虚拟主机与 TLS 校验），
+ * 详见 {@link UrlSafetyValidator} 类注释。要彻底闭合需出口代理层方案。
  */
 public final class SafeHttpFetcher {
 

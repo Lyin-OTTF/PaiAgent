@@ -32,6 +32,10 @@ import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Minimal stdio MCP client for Agent Plan Harness web search.
+ *
+ * <p>迭代8（评审报告 P2 #11 可测性改造）：会话建立抽为可注入的 {@link SessionFactory}
+ * （生产默认 {@link McpSession#start}），使「有界重试 / 结果归一化 / 参数构造」
+ * 可在不启动真实子进程的条件下单测。
  */
 @Slf4j
 @Service
@@ -43,6 +47,33 @@ public class SearchInfinityMcpClient {
 
     /** 会话建立（子进程启动 + 握手）的重试次数上限（迭代7 #14：瞬时故障有界重试）。 */
     private static final int MAX_START_ATTEMPTS = 2;
+
+    private final SessionFactory sessionFactory;
+
+    /** Spring 使用：默认工厂（启动真实 MCP 子进程）。 */
+    public SearchInfinityMcpClient() {
+        this(McpSession::start);
+    }
+
+    /** 测试使用：注入假会话工厂。 */
+    SearchInfinityMcpClient(SessionFactory sessionFactory) {
+        this.sessionFactory = sessionFactory;
+    }
+
+    /** MCP 会话句柄（测试可实现假句柄；生产实现为内部 {@link McpSession}）。 */
+    interface McpSessionHandle extends Closeable {
+        void initialize() throws IOException, InterruptedException, TimeoutException;
+
+        JSONObject callTool(String name, JSONObject arguments)
+                throws IOException, InterruptedException, TimeoutException;
+    }
+
+    /** 会话工厂：启动子进程并返回未初始化的会话句柄。 */
+    @FunctionalInterface
+    interface SessionFactory {
+        McpSessionHandle start(String command, List<String> args, Map<String, String> env)
+                throws IOException, InterruptedException, TimeoutException;
+    }
 
     public Map<String, Object> webSearch(McpToolConfig mcpToolConfig, String query, int count,
                                          String timeRange, Integer authLevel,
@@ -69,8 +100,9 @@ public class SearchInfinityMcpClient {
             throw new IllegalArgumentException("联网搜索缺少 query");
         }
 
-        try (McpSession session = openSession(resolveCommand(command), args, env)) {
-            session.initialize();
+        // 迭代8：删除此处重复的 session.initialize()——openSession 已完成握手（含重试），
+        // 再次 initialize 会重复一次 initialize/initialized 往返，属冗余协议流量。
+        try (McpSessionHandle session = openSession(resolveCommand(command), args, env)) {
             JSONObject arguments = new JSONObject();
             arguments.put("Query", query);
             arguments.put("Count", Math.max(1, Math.min(count, "image".equalsIgnoreCase(searchType) ? 5 : 50)));
@@ -104,14 +136,14 @@ public class SearchInfinityMcpClient {
      * 补一次有界重试；<b>工具调用本身不重试</b>——搜索超时的重试会把最坏延迟翻倍，
      * 且调用是否幂等由上游语义决定，不做隐式重放。
      */
-    private McpSession openSession(String command, List<String> args, Map<String, String> env)
+    private McpSessionHandle openSession(String command, List<String> args, Map<String, String> env)
             throws IOException, InterruptedException, TimeoutException {
         IOException lastIoError = null;
         TimeoutException lastTimeout = null;
         for (int attempt = 1; attempt <= MAX_START_ATTEMPTS; attempt++) {
-            McpSession session = null;
+            McpSessionHandle session = null;
             try {
-                session = McpSession.start(command, args, env);
+                session = sessionFactory.start(command, args, env);
                 session.initialize();
                 return session;
             } catch (IOException e) {
@@ -134,7 +166,7 @@ public class SearchInfinityMcpClient {
         throw new IOException("联网搜索 MCP 会话建立失败: command=" + command);
     }
 
-    private void closeQuietly(McpSession session) {
+    private void closeQuietly(McpSessionHandle session) {
         if (session == null) {
             return;
         }
@@ -563,7 +595,7 @@ public class SearchInfinityMcpClient {
         return value.substring(0, maxLength) + "...";
     }
 
-    private static final class McpSession implements Closeable {
+    static final class McpSession implements McpSessionHandle {
         private final Process process;
         private final BufferedReader input;
         private final BufferedWriter output;
@@ -595,7 +627,10 @@ public class SearchInfinityMcpClient {
             return new McpSession(builder.start());
         }
 
-        void initialize() throws IOException, InterruptedException, TimeoutException {
+        // 接口方法隐式为 public（JLS 9.4），实现必须显式 public；
+        // McpSession 本身是包级私有类，实际可达性与原先一致。
+        @Override
+        public void initialize() throws IOException, InterruptedException, TimeoutException {
             JSONObject params = new JSONObject();
             params.put("protocolVersion", "2024-11-05");
             params.put("capabilities", new JSONObject());
@@ -604,7 +639,8 @@ public class SearchInfinityMcpClient {
             notify("notifications/initialized", new JSONObject());
         }
 
-        JSONObject callTool(String name, JSONObject arguments) throws IOException, InterruptedException, TimeoutException {
+        @Override
+        public JSONObject callTool(String name, JSONObject arguments) throws IOException, InterruptedException, TimeoutException {
             JSONObject params = new JSONObject();
             params.put("name", name);
             params.put("arguments", arguments);

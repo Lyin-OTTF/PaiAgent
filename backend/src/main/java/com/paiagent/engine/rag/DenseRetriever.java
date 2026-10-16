@@ -37,15 +37,18 @@ public class DenseRetriever implements Retriever {
 
     private final KnowledgeChunkMapper chunkMapper;
     private final EmbeddingFunction embeddingFunction;
+    private final RagProperties properties;
 
     /** 桶 key = baseId:dim<维度> -> 索引 */
     private final Map<String, VectorIndex> indexes = new ConcurrentHashMap<>();
     /** 桶 key -> (chunkId -> 元数据) */
     private final Map<String, Map<Long, ScoredChunk>> metadataByBucket = new ConcurrentHashMap<>();
 
-    public DenseRetriever(KnowledgeChunkMapper chunkMapper, EmbeddingFunction embeddingFunction) {
+    public DenseRetriever(KnowledgeChunkMapper chunkMapper, EmbeddingFunction embeddingFunction,
+                          RagProperties properties) {
         this.chunkMapper = chunkMapper;
         this.embeddingFunction = embeddingFunction;
+        this.properties = properties;
     }
 
     @Override
@@ -101,7 +104,8 @@ public class DenseRetriever implements Retriever {
         evictIfOverCapacity();
         return indexes.computeIfAbsent(bucketKey, key -> {
             Map<Long, ScoredChunk> metadata = new ConcurrentHashMap<>();
-            VectorIndex index = new HnswVectorIndex();
+            // 迭代8（报告🟡8）：容量上限来自配置，默认 RagProperties.DEFAULT_MAX_VECTORS
+            VectorIndex index = new HnswVectorIndex(Math.max(1, properties.maxVectors()));
             List<KnowledgeChunk> chunks = chunkMapper.selectList(new LambdaQueryWrapper<KnowledgeChunk>()
                     .eq(KnowledgeChunk::getKnowledgeBaseId, knowledgeBaseId)
                     .eq(KnowledgeChunk::getStatus, "READY")

@@ -10,6 +10,7 @@ import java.util.Set;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class HnswVectorIndexTest {
@@ -122,5 +123,34 @@ class HnswVectorIndexTest {
             index.upsert((long) i, vectors.get(i));
         }
         assertEquals(7, index.search(randomVector(), 50).size());
+    }
+
+    @Test
+    void shouldRejectNewVectorBeyondCapacityButAllowOverwrite() {
+        HnswVectorIndex index = new HnswVectorIndex(2);
+        float[] v1 = randomVector();
+        float[] v2 = randomVector();
+        index.upsert(1L, v1);
+        index.upsert(2L, v2);
+
+        // 迭代8（报告🟡8）：新 id 超限显式失败，而不是静默丢弃或无界增长
+        assertThrows(IllegalStateException.class, () -> index.upsert(3L, randomVector()));
+        assertEquals(2, index.size());
+
+        // 同 id 覆盖写不放大内存，允许
+        index.upsert(1L, v2);
+        assertEquals(2, index.size());
+        // 覆盖后 id=1 与 id=2 向量相同，top1 归属不作断言；只要求 id=1 仍可被检索到
+        List<Long> hitIds = index.search(v2, 2).stream()
+                .map(VectorIndex.ScoredVector::id)
+                .toList();
+        assertTrue(hitIds.contains(1L), "覆盖写后 id=1 应仍可检索: " + hitIds);
+    }
+
+    @Test
+    void shouldTreatNonPositiveCapacityAsOne() {
+        HnswVectorIndex index = new HnswVectorIndex(0);
+        index.upsert(1L, randomVector());
+        assertThrows(IllegalStateException.class, () -> index.upsert(2L, randomVector()));
     }
 }

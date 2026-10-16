@@ -22,6 +22,14 @@ public class RagProperties {
     private double coverageWeight = 0.4;
     private double titleWeight = 0.2;
 
+    /**
+     * 单个向量索引桶的最大向量数（迭代8 · 报告🟡8 后半：HNSW 内存无上限的参数化兜底）。
+     *
+     * <p>HNSW 索引按「知识库 × 维度」分桶懒加载，全量 chunk 进内存；单桶超限时写入显式失败
+     * （{@link HybridRetriever} 对向量路异常安全兜底，检索退化为词法路），而非静默驱逐或无限增长。
+     */
+    private int maxVectors = 100_000;
+
     public boolean isHybridEnabled() {
         return hybridEnabled;
     }
@@ -68,5 +76,13 @@ public class RagProperties {
 
     public void setTitleWeight(double titleWeight) {
         this.titleWeight = titleWeight;
+    }
+
+    public int maxVectors() {
+        return maxVectors;
+    }
+
+    public void setMaxVectors(int maxVectors) {
+        this.maxVectors = maxVectors;
     }
 }
