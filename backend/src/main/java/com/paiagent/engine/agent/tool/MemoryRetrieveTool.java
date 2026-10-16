@@ -1,9 +1,11 @@
 package com.paiagent.engine.agent.tool;
 
+import com.paiagent.common.UserContext;
 import com.paiagent.engine.agent.AgentTool;
 import com.paiagent.engine.agent.AgentToolContext;
 import com.paiagent.engine.agent.policy.AutonomyLevel;
 import com.paiagent.engine.agent.policy.ToolPolicy;
+import com.paiagent.engine.agent.tenant.TenantContext;
 import com.paiagent.engine.memory.MemoryQueryRequest;
 import com.paiagent.service.AgentMemoryService;
 import com.paiagent.service.AgentPlanConfigResolver;
@@ -14,9 +16,24 @@ import org.springframework.stereotype.Component;
 import java.util.List;
 import java.util.Map;
 
+/**
+ * 分层记忆检索工具。
+ *
+ * <p><b>迭代9（评审报告第九章 🔴1）</b>：{@code userId}/{@code sessionId}/{@code tenantId}
+ * 不再取自模型入参（此前输入 schema 明确暴露这三字段，提示注入即可诱导 LLM 以
+ * {@code userId=受害者} 读取他人 USER 层记忆）——改为服务端投影：
+ * <ul>
+ *   <li>{@code userId} ← {@link UserContext#currentOwner()}（登录态，不可伪造）；</li>
+ *   <li>{@code tenantId} ← {@link TenantContext}（{@code X-Tenant-Id} 请求头投影）；</li>
+ *   <li>{@code sessionId} ← {@link AgentToolContext#sessionId()}（执行身份派生）。</li>
+ * </ul>
+ */
 @Component
 @ToolPolicy(level = AutonomyLevel.OBSERVE)
 public class MemoryRetrieveTool implements AgentTool {
+
+    /** 未声明租户时的兜底值，与 {@code TenantProjectionInterceptor.DEFAULT_TENANT} 对齐。 */
+    private static final String DEFAULT_TENANT = "global";
 
     private final AgentPlanConfigResolver configResolver;
     private final VolcengineAgentPlanClient agentPlanClient;
@@ -42,7 +59,8 @@ public class MemoryRetrieveTool implements AgentTool {
 
     @Override
     public String getInputSchema() {
-        return "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"description\":\"working/session/user/team\"},\"topK\":{\"type\":\"number\"},\"sessionId\":{\"type\":\"string\"},\"userId\":{\"type\":\"string\"},\"tenantId\":{\"type\":\"string\"}},\"required\":[\"query\"]}";
+        // 迭代9：不再暴露 userId/sessionId/tenantId —— 归属维度由服务端投影，模型不可指定
+        return "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"},\"scope\":{\"type\":\"string\",\"description\":\"working/session/user/team\"},\"topK\":{\"type\":\"number\"}},\"required\":[\"query\"]}";
     }
 
     @Override
@@ -60,18 +78,9 @@ public class MemoryRetrieveTool implements AgentTool {
                 .scope(scope)
                 .topK(topK)
                 .queryEmbedding(embedding)
-                .sessionId(optionalText(arguments, "sessionId"))
-                .userId(optionalText(arguments, "userId"))
-                .tenantId(optionalText(arguments, "tenantId"))
+                .sessionId(context.sessionId())
+                .userId(UserContext.currentOwner())
+                .tenantId(TenantContext.getCurrentOrDefault(DEFAULT_TENANT))
                 .build());
-    }
-
-    private String optionalText(Map<String, Object> arguments, String key) {
-        Object value = arguments.get(key);
-        if (value == null) {
-            return null;
-        }
-        String text = String.valueOf(value).trim();
-        return text.isEmpty() ? null : text;
     }
 }

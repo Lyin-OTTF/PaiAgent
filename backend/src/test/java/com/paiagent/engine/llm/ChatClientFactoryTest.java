@@ -2,6 +2,10 @@ package com.paiagent.engine.llm;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.http.client.ClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.test.util.ReflectionTestUtils;
+import org.springframework.web.client.RestClient;
 
 import com.sun.net.httpserver.HttpServer;
 import java.net.InetSocketAddress;
@@ -10,6 +14,7 @@ import java.lang.reflect.Method;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
 class ChatClientFactoryTest {
@@ -87,5 +92,40 @@ class ChatClientFactoryTest {
         } finally {
             server.stop(0);
         }
+    }
+
+    // ------------------------------------------------------------------
+    // 迭代9 P1-5：RestClient 连接/读取超时注入
+
+    /**
+     * P1-5：同步路径的 RestClient 必须携带连接与读取超时。
+     * 修复前 {@code RestClient.builder()} 用默认工厂（超时为 0=无限），
+     * 上游半开连接会把 worker 线程永久占住，有界线程池被逐个耗尽。
+     */
+    @Test
+    void restClientBuilder_appliesConfiguredTimeouts() throws Exception {
+        RestClient.Builder builder = ReflectionTestUtils.invokeMethod(factory, "createRestClientBuilder");
+        assertNotNull(builder);
+
+        ClientHttpRequestFactory requestFactory =
+                (ClientHttpRequestFactory) ReflectionTestUtils.getField(builder, "requestFactory");
+        assertInstanceOf(SimpleClientHttpRequestFactory.class, requestFactory);
+
+        Object connectTimeout = ReflectionTestUtils.getField(requestFactory, "connectTimeout");
+        Object readTimeout = ReflectionTestUtils.getField(requestFactory, "readTimeout");
+        assertNotNull(connectTimeout);
+        assertNotNull(readTimeout);
+        assertEquals(10_000, ((Number) connectTimeout).intValue(), "连接超时应为 10s");
+        assertEquals(120_000, ((Number) readTimeout).intValue(), "读取超时应为 120s");
+    }
+
+    /**
+     * 字段内联默认值必须与 {@code @Value} 兜底一致：生产环境由 Spring 注入，
+     * 但单测/直接 new 时若没有内联默认值，超时会静默变成 0（无限）——本用例锁定默认值。
+     */
+    @Test
+    void timeoutFieldsHaveSaneDefaultsForDirectInstantiation() {
+        assertEquals(10_000, ((Number) ReflectionTestUtils.getField(factory, "connectTimeoutMs")).intValue());
+        assertEquals(120_000, ((Number) ReflectionTestUtils.getField(factory, "readTimeoutMs")).intValue());
     }
 }

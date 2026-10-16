@@ -16,6 +16,7 @@ import org.mockito.ArgumentCaptor;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
+import java.time.Duration;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -23,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.*;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.argThat;
 import static org.mockito.Mockito.*;
 
@@ -62,10 +64,14 @@ class ToolGatewayTest {
         return new ToolExecutionContext(tenant, allowed, "react_agent", 1L, 2L, "node-1");
     }
 
-    /** 幂等守卫测试工厂：Redis mock 默认未命中/无操作，行为等价进程内实现。 */
+    /** 幂等守卫测试工厂：模拟「健康且为空的 Redis」，行为等价进程内实现。 */
     private IdempotencyGuard guard() {
         StringRedisTemplate redis = mock(StringRedisTemplate.class);
-        when(redis.opsForValue()).thenReturn(mock(ValueOperations.class));
+        ValueOperations<String, String> valueOperations = mock(ValueOperations.class);
+        when(redis.opsForValue()).thenReturn(valueOperations);
+        // Mockito 对返回 Boolean 的方法默认给 false（非 null）；不显式打桩会被当成
+        // 「Redis 明确拒绝占位」而拒绝首次执行，故模拟 SETNX 成功。
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(true);
         return new IdempotencyGuard(600000, redis, new ObjectMapper());
     }
 
@@ -313,5 +319,113 @@ class ToolGatewayTest {
         assertNotNull(created.getSuspendContext(), "挂起快照必须落库");
         assertTrue(created.getSuspendContext().contains("\"toolName\":\"t9\""));
         assertTrue(created.getSuspendContext().contains("\"executionId\":100"));
+    }
+
+    // ------------------------------------------------------------------
+    // 迭代9 P1-8：requiresApproval 提级 + 幂等原子抢占
+    // ------------------------------------------------------------------
+
+    /**
+     * P1-8 核心行为：{@code requiresApproval} 是工具自身的显式声明，必须独立于等级比较生效。
+     * 修复前整个审批判定被嵌在「等级越限」分支内——等级充足时声明的审批被整段跳过，
+     * 标注 requiresApproval 的写工具会直接执行（本用例在修复前会得到 EXECUTED）。
+     */
+    @Test
+    void shouldRouteToApprovalWhenRequiresApprovalEvenIfLevelSufficient() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        // OBSERVE 低于 EXECUTE：等级不越限，但工具显式声明需审批
+        when(pr.resolve("t11")).thenReturn(new ResolvedPolicy(AutonomyLevel.OBSERVE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        when(approval.create(any())).thenAnswer(inv -> {
+            ApprovalRecord r = inv.getArgument(0);
+            r.setId(300L);
+            return r;
+        });
+
+        FakeTool tool = new FakeTool("t11", Map.of());
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        ToolGatewayResult result = gw.execute(tool, Map.of(), ctx(AutonomyLevel.EXECUTE, "global"),
+                new AgentToolContext(null, Map.of()));
+
+        assertEquals(GatewayStatus.PENDING_APPROVAL, result.status());
+        assertEquals(300L, result.approvalId());
+        assertEquals(0, tool.calls.get(), "声明需审批的工具不得直接执行");
+        verify(approval).create(any());
+        verify(ledger).record(argThat(record ->
+                "PENDING_APPROVAL".equals(record.getActionStatus()) && Long.valueOf(300L).equals(record.getApprovalId())));
+    }
+
+    /** requiresApproval 与等级充足并存，且携带已获批审批单：应预授权穿透执行。 */
+    @Test
+    void shouldExecutePreApprovedWhenRequiresApprovalAndLevelSufficient() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t12")).thenReturn(new ResolvedPolicy(AutonomyLevel.OBSERVE, false, "global", false, true));
+        IdempotencyGuard guard = guard();
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+        when(approval.isApprovedFor(77L, "t12", "global")).thenReturn(true);
+
+        FakeTool tool = new FakeTool("t12", Map.of("v", "ok"));
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        ToolGatewayResult result = gw.execute(tool, Map.of(), preApprovedCtx(77L),
+                new AgentToolContext(null, Map.of()));
+
+        assertEquals(GatewayStatus.EXECUTED, result.status());
+        assertEquals(1, tool.calls.get());
+        verify(approval, never()).create(any());
+        verify(ledger).record(argThat(record ->
+                "EXECUTED".equals(record.getActionStatus()) && Long.valueOf(77L).equals(record.getApprovalId())));
+    }
+
+    /**
+     * P1-8：执行前原子抢占幂等键。未抢到 = 已有并发在途调用，必须拒绝，
+     * 而不是沿用「查缓存未命中就执行」的 check-then-act 语义。
+     */
+    @Test
+    void shouldDenyWhenIdempotencyClaimNotAcquired() throws Exception {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t13")).thenReturn(new ResolvedPolicy(AutonomyLevel.OBSERVE, false, "global", true, false));
+        IdempotencyGuard guard = mock(IdempotencyGuard.class);
+        when(guard.getIfPresent(any())).thenReturn(null);   // 缓存未命中
+        when(guard.tryClaim(any())).thenReturn(false);      // 但已被并发调用抢占
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+
+        FakeTool tool = new FakeTool("t13", Map.of());
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        ToolGatewayResult result = gw.execute(tool, Map.of("k", "v"), ctx(AutonomyLevel.EXECUTE, "global"),
+                new AgentToolContext(null, Map.of()));
+
+        assertEquals(GatewayStatus.DENIED, result.status());
+        assertEquals(0, tool.calls.get(), "未抢到幂等占位时不得执行工具");
+        verify(ledger).record(argThat(record -> "DENIED".equals(record.getActionStatus())));
+        verify(guard, never()).put(any(), any());
+    }
+
+    /** P1-8：幂等工具执行失败必须归还占位，否则 TTL 窗口内的正常重试会被误判为并发。 */
+    @Test
+    void shouldReleaseIdempotencyClaimWhenToolFails() {
+        PolicyRegistry pr = mock(PolicyRegistry.class);
+        when(pr.resolve("t14")).thenReturn(new ResolvedPolicy(AutonomyLevel.OBSERVE, false, "global", true, false));
+        IdempotencyGuard guard = mock(IdempotencyGuard.class);
+        when(guard.getIfPresent(any())).thenReturn(null);
+        when(guard.tryClaim(any())).thenReturn(true);
+        ActionLedgerService ledger = mock(ActionLedgerService.class);
+        ApprovalService approval = mock(ApprovalService.class);
+
+        FakeTool tool = new FakeTool("t14", Map.of(), new RuntimeException("boom"));
+        ToolGateway gw = gateway(pr, guard, ledger, approval);
+
+        assertThrows(Exception.class, () -> gw.execute(tool, Map.of("k", "v"),
+                ctx(AutonomyLevel.EXECUTE, "global"), new AgentToolContext(null, Map.of())));
+
+        verify(guard).release(any());
+        verify(guard, never()).put(any(), any());
+        verify(ledger).record(argThat(record -> "ERROR".equals(record.getActionStatus())));
     }
 }

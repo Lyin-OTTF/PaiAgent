@@ -26,7 +26,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * </ul>
  *
  * <p><b>读写路径</b>：{@link #getIfPresent} 先查 Redis、未命中再查内存（回退路径写入的）；
- * {@link #put} 双写（内存 + Redis）。任一侧异常只打 WARN 不影响主流程。
+ * 执行前用 {@link #tryClaim} 原子占位（迭代9 P1-8 消除 check-then-act 竞态），
+ * {@link #put} 双写（内存 + Redis）落结果，失败路径用 {@link #release} 归还占位。
+ * 任一侧异常只打 WARN 不影响主流程。
  */
 @Component
 public class IdempotencyGuard {
@@ -35,6 +37,14 @@ public class IdempotencyGuard {
 
     /** Redis key 前缀（paiagent:idem: + 调用方传入的幂等键）。 */
     private static final String REDIS_KEY_PREFIX = "paiagent:idem:";
+
+    /**
+     * 在途占位标记（迭代9 P1-8）。
+     *
+     * <p>写入 Redis 的是一个<b>非 JSON 串</b>：读取侧 {@link #parseJson} 解析失败会按
+     * 「未命中」处理，天然不会把占位符当成真实结果返回，无需额外的类型判别。
+     */
+    private static final String IN_FLIGHT_MARKER = "__paiagent_idem_in_flight__";
 
     private final long ttlMillis;
     private final StringRedisTemplate redisTemplate;
@@ -67,7 +77,8 @@ public class IdempotencyGuard {
 
         // 2. 进程内回退层（Redis 未命中或不可用）
         Entry entry = store.get(key);
-        if (entry == null) {
+        if (entry == null || entry.value == null) {
+            // 值为 null = 在途占位（已抢占、尚未产出结果）：不算命中，交由调用方继续
             return null;
         }
         if (System.currentTimeMillis() - entry.ts > ttlMillis) {
@@ -75,6 +86,68 @@ public class IdempotencyGuard {
             return null;
         }
         return entry.value;
+    }
+
+    /**
+     * 原子抢占幂等键（迭代9 P1-8）。
+     *
+     * <p>修复前网关侧是「{@link #getIfPresent} 未命中 → 执行工具 → {@link #put}」的
+     * check-then-act：两个并发请求会同时未命中、各执行一次带副作用的工具，幂等被架空。
+     * 现在执行前先原子占位（进程内 {@code putIfAbsent} + Redis {@code SETNX}），
+     * 只有抢到执行权的调用才继续；其余调用视为「有并发在途」被拒。
+     *
+     * <p><b>判定优先级</b>：
+     * <ol>
+     *   <li>Redis 明确返回 {@code true}（本实例抢到）→ 放行；</li>
+     *   <li>Redis 明确返回 {@code false}（<b>他人</b>持有，含其它实例）→ 拒绝，
+     *       并撤销本地占位。否则「内存抢到但 Redis 被占」会退化成放行，
+     *       {@code SETNX} 对跨实例幂等就完全失去意义；</li>
+     *   <li>Redis 抛异常（不可用）→ 降级，以进程内占位结果为准（单实例幂等仍生效）。</li>
+     * </ol>
+     *
+     * @return {@code true} 抢到执行权，应继续执行；{@code false} 已被其它在途/已完成调用占有
+     */
+    public boolean tryClaim(String key) {
+        Entry claimedEntry = new Entry(System.currentTimeMillis(), null);
+        boolean memoryClaimed = store.putIfAbsent(key, claimedEntry) == null;
+
+        Boolean redisAcquired = null;
+        try {
+            redisAcquired = redisTemplate.opsForValue()
+                    .setIfAbsent(REDIS_KEY_PREFIX + key, IN_FLIGHT_MARKER, Duration.ofMillis(ttlMillis));
+        } catch (Exception e) {
+            // Redis 故障：降级为进程内幂等（与 get/put 的降级策略一致）
+            log.warn("Redis 幂等占位失败，降级为进程内占位: key={}, error={}", key, e.getMessage());
+        }
+
+        if (redisAcquired == null) {
+            // Redis 不可用：以本地抢占为准（单实例语义与治理前一致）
+            return memoryClaimed;
+        }
+        if (Boolean.TRUE.equals(redisAcquired)) {
+            return true;
+        }
+        // Redis 明确拒绝：键已被他人（其它实例）持有 → 拒绝重复执行，并撤销本地占位保持两层一致
+        if (memoryClaimed) {
+            store.remove(key, claimedEntry);
+        }
+        return false;
+    }
+
+    /** 释放占位（执行失败时调用，避免 TTL 窗口内正常重试被误拒）。 */
+    public void release(String key) {
+        Entry entry = store.get(key);
+        if (entry != null && entry.value == null) {
+            store.remove(key, entry);
+        }
+        try {
+            String current = redisTemplate.opsForValue().get(REDIS_KEY_PREFIX + key);
+            if (IN_FLIGHT_MARKER.equals(current)) {
+                redisTemplate.delete(REDIS_KEY_PREFIX + key);
+            }
+        } catch (Exception e) {
+            log.warn("释放 Redis 幂等占位失败: key={}, error={}", key, e.getMessage());
+        }
     }
 
     public void put(String key, Map<String, Object> value) {

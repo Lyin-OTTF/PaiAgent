@@ -7,6 +7,8 @@ import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationR
 import com.alibaba.dashscope.utils.Constants;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.SafeHttpFetcher;
+import com.paiagent.common.UrlSafetyValidator;
 import com.paiagent.dto.ExecutionEvent;
 import com.paiagent.engine.executor.NodeExecutor;
 import com.paiagent.engine.model.WorkflowNode;
@@ -36,6 +38,10 @@ public class TTSNodeExecutor implements NodeExecutor {
     private static final int QWEN_MAX_TTS_INPUT_BYTES = 600;
     private static final int STEP_MAX_TTS_INPUT_LENGTH = 1000;
     private static final int STEP_INSTRUCTION_MAX_LENGTH = 200;
+    /** TTS 音频/响应体上限（迭代9 P1-7）：单片段音频远小于此，超限视为异常端点。 */
+    private static final int MAX_TTS_RESPONSE_BYTES = 32 * 1024 * 1024;
+    private static final int AUDIO_CONNECT_TIMEOUT_MS = 30000;
+    private static final int AUDIO_READ_TIMEOUT_MS = 30000;
     private static final Object DASHSCOPE_HTTP_URL_LOCK = new Object();
     
     @Autowired
@@ -295,6 +301,8 @@ public class TTSNodeExecutor implements NodeExecutor {
 
     private byte[] callStepTts(TtsRuntimeConfig config, String chunk) throws Exception {
         String endpoint = normalizeStepSpeechEndpoint(config.apiUrl());
+        // 迭代9 P1-7：TTS 端点部分来自节点配置（用户可控），补出站安全校验
+        UrlSafetyValidator.assertSafeOutbound(endpoint);
         HttpURLConnection conn = (HttpURLConnection) new URL(endpoint).openConnection();
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(30000);
@@ -327,6 +335,10 @@ public class TTSNodeExecutor implements NodeExecutor {
                 byte[] buffer = new byte[8192];
                 int bytesRead;
                 while ((bytesRead = is.read(buffer)) != -1) {
+                    // 迭代9 P1-7：限长读取，避免异常/恶意端点返回超大响应打爆内存
+                    if (baos.size() + bytesRead > MAX_TTS_RESPONSE_BYTES) {
+                        throw new RuntimeException("StepAudio TTS 响应超过上限 " + MAX_TTS_RESPONSE_BYTES + " 字节，已中止");
+                    }
                     baos.write(buffer, 0, bytesRead);
                 }
             }
@@ -585,24 +597,15 @@ public class TTSNodeExecutor implements NodeExecutor {
         return string.isEmpty() ? null : string;
     }
     
+    /**
+     * 下载 TTS 合成音频（迭代9 P1-7）。
+     *
+     * <p>修复前直接 {@code new URL(audioUrl).openConnection()} 无上限读入——音频 URL 来自
+     * 第三方 TTS 服务的响应，属「外部可控 URL」；现统一走 {@link SafeHttpFetcher}，
+     * 获得逐跳安全校验（协议/内网/内嵌凭证）+ 连接与读取超时 + 大小上限。
+     */
     private byte[] downloadAudio(String audioUrl) throws Exception {
-        URL url = new URL(audioUrl);
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
-        conn.setConnectTimeout(30000);
-        conn.setReadTimeout(30000);
-        
-        try (InputStream is = conn.getInputStream();
-             ByteArrayOutputStream baos = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[8192];
-            int bytesRead;
-            while ((bytesRead = is.read(buffer)) != -1) {
-                baos.write(buffer, 0, bytesRead);
-            }
-            return baos.toByteArray();
-        } finally {
-            conn.disconnect();
-        }
+        return SafeHttpFetcher.fetchBytes(audioUrl, AUDIO_CONNECT_TIMEOUT_MS, AUDIO_READ_TIMEOUT_MS, MAX_TTS_RESPONSE_BYTES);
     }
     
     private byte[] mergeWavFiles(List<byte[]> audioChunks) throws Exception {

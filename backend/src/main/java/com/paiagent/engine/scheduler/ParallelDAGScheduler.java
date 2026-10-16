@@ -1,5 +1,7 @@
 package com.paiagent.engine.scheduler;
 
+import com.paiagent.common.UserContext;
+import com.paiagent.engine.agent.tenant.TenantContext;
 import com.paiagent.engine.model.WorkflowEdge;
 import com.paiagent.engine.model.WorkflowNode;
 import lombok.extern.slf4j.Slf4j;
@@ -67,6 +69,13 @@ public class ParallelDAGScheduler {
         RunState state = initState(topoNodes, edges, resume);
         long deadlineMillis = System.currentTimeMillis() + config.getShutdownTimeoutSeconds() * 1000L;
 
+        // 迭代9 P1-8：调用方（HTTP 请求线程 / HITL 补执行线程）的归属与租户上下文
+        // 不会自动继承到工作线程。若不显式传递，并行分支里的知识库/记忆/工具调用
+        // 会以「无上下文」执行——用户归属退化为 system、租户退化为 global，
+        // 既可能越权也可能被后续的归属校验误拒。
+        String ownerContext = UserContext.getCurrent();
+        String tenantContext = TenantContext.getCurrent();
+
         ThreadPoolExecutor pool = new ThreadPoolExecutor(
                 poolSize, poolSize, 0L, TimeUnit.MILLISECONDS,
                 new LinkedBlockingQueue<>(),
@@ -75,7 +84,7 @@ public class ParallelDAGScheduler {
 
         long startTime = System.currentTimeMillis();
         try {
-            dispatchLoop(state, pool, poolSize, taskExecutor, inputResolver);
+            dispatchLoop(state, pool, poolSize, taskExecutor, inputResolver, ownerContext, tenantContext);
             drain(state, deadlineMillis);
         } finally {
             pool.shutdown();
@@ -101,7 +110,9 @@ public class ParallelDAGScheduler {
                               ThreadPoolExecutor pool,
                               int poolSize,
                               NodeTaskExecutor taskExecutor,
-                              InputResolver inputResolver) {
+                              InputResolver inputResolver,
+                              String ownerContext,
+                              String tenantContext) {
         dispatch:
         while (true) {
             List<String> batch = new ArrayList<>();
@@ -139,7 +150,7 @@ public class ParallelDAGScheduler {
                 state.inFlight += batch.size();
             }
             for (String nodeId : batch) {
-                pool.execute(() -> runNode(state, nodeId, taskExecutor, inputResolver));
+                pool.execute(() -> runNode(state, nodeId, taskExecutor, inputResolver, ownerContext, tenantContext));
             }
         }
     }
@@ -164,7 +175,24 @@ public class ParallelDAGScheduler {
     private void runNode(RunState state,
                          String nodeId,
                          NodeTaskExecutor taskExecutor,
-                         InputResolver inputResolver) {
+                         InputResolver inputResolver,
+                         String ownerContext,
+                         String tenantContext) {
+        // 迭代9 P1-8：显式投影调用方上下文；finally 清理，防线程池复用串扰
+        UserContext.setCurrent(ownerContext);
+        TenantContext.setCurrent(tenantContext);
+        try {
+            runNodeInternal(state, nodeId, taskExecutor, inputResolver);
+        } finally {
+            UserContext.clear();
+            TenantContext.clear();
+        }
+    }
+
+    private void runNodeInternal(RunState state,
+                                 String nodeId,
+                                 NodeTaskExecutor taskExecutor,
+                                 InputResolver inputResolver) {
         WorkflowNode node = state.nodeMap.get(nodeId);
         Map<String, Object> input = null;
         long nodeStart = System.currentTimeMillis();

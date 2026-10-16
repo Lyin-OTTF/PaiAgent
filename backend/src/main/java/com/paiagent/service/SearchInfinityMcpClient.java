@@ -3,6 +3,7 @@ package com.paiagent.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.McpCommandValidator;
 import com.paiagent.entity.McpToolConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -613,6 +614,9 @@ public class SearchInfinityMcpClient {
         }
 
         static McpSession start(String command, List<String> args, Map<String, String> env) throws IOException {
+            // 迭代9 P1-6：执行前复核命令白名单（纵深防御——库中可能仍有白名单上线前的历史配置，
+            // 或已被越权改写的记录）。不通过则直接拒绝启动，不落进程。
+            McpCommandValidator.assertSafeCommand(command);
             List<String> commandLine = new ArrayList<>();
             commandLine.add(command);
             commandLine.addAll(args == null ? List.of() : args);

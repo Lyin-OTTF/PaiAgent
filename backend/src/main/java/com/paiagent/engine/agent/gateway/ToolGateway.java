@@ -76,9 +76,14 @@ public class ToolGateway {
             }
         }
 
-        // 2. 自治等级校验
-        if (policy.level().isHigherThan(ctx.allowedLevel())) {
-            boolean needApproval = policy.isRequiresApproval() || policy.level() == AutonomyLevel.ESCALATE;
+        // 2. 自治等级校验 / 审批判定
+        boolean levelExceeded = policy.level().isHigherThan(ctx.allowedLevel());
+        // 迭代9 P1-8：requiresApproval 是工具自身的显式声明，必须优先于等级比较。
+        // 修复前整个审批判定被嵌在「等级越限」分支内——等级充足（policy.level <= allowedLevel）时
+        // 声明的审批被整段跳过，标注 requiresApproval 的写工具会直接执行。
+        boolean needApproval = policy.isRequiresApproval()
+                || (levelExceeded && policy.level() == AutonomyLevel.ESCALATE);
+        if (levelExceeded || needApproval) {
             // 迭代6：携带已获批审批单的调用视为「这一次特定调用已获人类预授权」，
             // 不再新建审批单，直接穿透执行（租户校验/幂等/审计不受影响）。
             // 迭代7 A6：预授权还需「审批单 + 工具 + 租户」三者匹配，
@@ -122,6 +127,13 @@ public class ToolGateway {
                 recordLedger(ctx, toolName, policy, args, "EXECUTED", "命中幂等缓存", summarize(cached), ctx.approvalId(), idemKey);
                 return ToolGatewayResult.executed(cached, "命中幂等缓存");
             }
+            // 迭代9 P1-8：执行前原子抢占幂等键。修复前是「查缓存未命中 → 执行 → 写缓存」的
+            // check-then-act，并发调用会双双未命中并各执行一次副作用（重复转账/重复写库）。
+            if (!idempotencyGuard.tryClaim(idemKey)) {
+                String msg = "检测到同一幂等调用的并发在途执行，已拒绝重复执行（防止重复副作用）";
+                recordLedger(ctx, toolName, policy, args, "DENIED", msg, null, ctx.approvalId(), idemKey);
+                return ToolGatewayResult.denied(msg);
+            }
         }
 
         // 4. 执行并审计
@@ -134,6 +146,10 @@ public class ToolGateway {
             recordLedger(ctx, toolName, policy, args, "EXECUTED", null, summarize(safeOutput), ctx.approvalId(), idemKey);
             return ToolGatewayResult.executed(safeOutput, null);
         } catch (Exception e) {
+            if (policy.isIdempotent()) {
+                // 执行失败归还占位，否则 TTL 窗口内正常重试会被误判为并发而拒绝
+                idempotencyGuard.release(idemKey);
+            }
             recordLedger(ctx, toolName, policy, args, "ERROR", e.getMessage(), null, ctx.approvalId(), idemKey);
             throw e;
         }

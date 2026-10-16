@@ -490,14 +490,16 @@ npm run dev
 
 #### 步骤 5：首次登录
 
-**开发环境默认账户**（可在 `backend/.env` 中修改）：
+**开发环境默认账户**（在 `backend/.env` 中自行配置）：
 
 | 配置项 | 默认值 | 说明 |
 |--------|--------|------|
-| 用户名 | `admin` | 通过 `APP_AUTH_DEFAULT_USERNAME` 配置 |
-| 密码 | `admin123` | 通过 `APP_AUTH_DEFAULT_PASSWORD` 配置 |
+| 用户名 | 无（需自行配置） | 通过 `APP_AUTH_DEFAULT_USERNAME` 配置 |
+| 密码 | 无（需自行配置） | 通过 `APP_AUTH_DEFAULT_PASSWORD` 配置 |
 
 > **⚠️ 安全提示**：
+> - 仓库**不再内置任何可用默认口令**：两个变量都留空即禁用默认账户
+> - 弱口令（`admin` / `admin123` / `123456` / `password` 等）或短于 8 位的口令会让应用**启动直接失败**，避免弱口令被静默带上线
 > - 默认账户仅用于开发测试，生产环境必须修改或禁用
 > - 首次登录后请立即修改密码（功能待实现）
 > - 可通过环境变量 `APP_AUTH_DEFAULT_USERNAME` 和 `APP_AUTH_DEFAULT_PASSWORD` 自定义

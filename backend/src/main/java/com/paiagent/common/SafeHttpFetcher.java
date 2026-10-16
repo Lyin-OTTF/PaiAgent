@@ -94,4 +94,68 @@ public final class SafeHttpFetcher {
         }
         return buffer.toString(StandardCharsets.UTF_8);
     }
+
+    /**
+     * 抓取单个 URL 的二进制内容（迭代9 P1-7：TTS 音频下载、MinIO 转存共用）。
+     *
+     * <p>与 {@link #fetchText} 同源：每跳安全校验（协议白名单 + 内网黑名单 + 拒绝内嵌凭证）、
+     * 手动跟随重定向、连接/读取超时。区别是二进制内容不做截断——超过 {@code maxBytes}
+     * 直接失败（静默截断会产出损坏文件）。
+     *
+     * @throws IOException 网络异常、超过跳数上限、声明或实际长度超过 {@code maxBytes}
+     */
+    public static byte[] fetchBytes(String urlText, int connectTimeoutMs, int readTimeoutMs, int maxBytes)
+            throws IOException {
+        String current = urlText;
+        for (int hop = 0; hop <= MAX_REDIRECTS; hop++) {
+            UrlSafetyValidator.assertSafeOutbound(current);
+            HttpURLConnection connection = (HttpURLConnection) URI.create(current).toURL().openConnection();
+            try {
+                connection.setConnectTimeout(connectTimeoutMs);
+                connection.setReadTimeout(readTimeoutMs);
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestProperty("User-Agent", "PaiAgent/1.0");
+
+                int status = connection.getResponseCode();
+                if (status >= 300 && status < 400) {
+                    String location = connection.getHeaderField("Location");
+                    if (location == null || location.isBlank()) {
+                        throw new IOException("重定向缺少 Location 头: " + current);
+                    }
+                    current = URI.create(current).resolve(location.trim()).toString();
+                    continue;
+                }
+
+                long declaredLength = connection.getContentLengthLong();
+                if (declaredLength > maxBytes) {
+                    throw new IOException("响应体声明长度 " + declaredLength + " 字节，超过上限 " + maxBytes + ": " + current);
+                }
+
+                InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+                if (stream == null) {
+                    throw new IOException("HTTP " + status + ": " + current);
+                }
+                try (InputStream body = stream) {
+                    return readLimitedBytes(body, maxBytes, current);
+                }
+            } finally {
+                connection.disconnect();
+            }
+        }
+        throw new IOException("重定向次数超过上限（" + MAX_REDIRECTS + "）: " + urlText);
+    }
+
+    /** 严格限长读取：超过 {@code maxBytes} 立即失败，避免把超大响应读进内存。 */
+    private static byte[] readLimitedBytes(InputStream stream, int maxBytes, String url) throws IOException {
+        ByteArrayOutputStream buffer = new ByteArrayOutputStream();
+        byte[] chunk = new byte[8192];
+        int read;
+        while ((read = stream.read(chunk)) != -1) {
+            if (buffer.size() + read > maxBytes) {
+                throw new IOException("响应体超过上限 " + maxBytes + " 字节，已中止下载: " + url);
+            }
+            buffer.write(chunk, 0, read);
+        }
+        return buffer.toByteArray();
+    }
 }

@@ -158,6 +158,9 @@ public class KnowledgeBaseService {
     }
 
     public List<Map<String, Object>> listDocuments(Long knowledgeBaseId) {
+        // 迭代9 P0-3：文档列表可能被直接命中（KnowledgeBaseController 直通），补归属校验，
+        // 修复前无过滤 → 枚举知识库 id 即可列出他人文档。
+        requireBaseForRuntime(knowledgeBaseId);
         return knowledgeDocumentMapper.selectList(new LambdaQueryWrapper<KnowledgeDocument>()
                         .eq(KnowledgeDocument::getKnowledgeBaseId, knowledgeBaseId)
                         .orderByDesc(KnowledgeDocument::getUpdatedAt))
@@ -264,8 +267,9 @@ public class KnowledgeBaseService {
                 log.warn("Hybrid retrieve failed (base={}), fallback to legacy scan: {}", baseId, e.getMessage());
             }
         }
-        // 运行时路径（工作流节点/检索降级）：执行线程无用户上下文，只做存在性校验
-        KnowledgeBase base = requireBaseUnscoped(baseId);
+        // 运行时路径（工作流节点/检索降级）：迭代9 P0-3 补归属校验——
+        // knowledgeBaseId 来自用户可控的 flowData，必须限制在「本人 + system」范围内。
+        KnowledgeBase base = requireBaseForRuntime(baseId);
         List<Double> queryEmbedding = List.of();
         try {
             ResolvedAgentPlanConfig config = configResolver.resolveKnowledgeConfig(base.getConfigId(), base.getEmbeddingModel());
@@ -403,10 +407,12 @@ public class KnowledgeBaseService {
     private KnowledgeBase resolveBaseForRuntime(String knowledgeBaseId, String embeddingModel) {
         if (StringUtils.hasText(knowledgeBaseId) && !"default".equalsIgnoreCase(knowledgeBaseId.trim())) {
             try {
-                return requireBaseUnscoped(Long.parseLong(knowledgeBaseId.trim()));
+                return requireBaseForRuntime(Long.parseLong(knowledgeBaseId.trim()));
             } catch (NumberFormatException ignored) {
+                // 按名称解析同样限制在「本人 + system」范围，避免同名命中他人知识库
                 KnowledgeBase named = knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBase>()
                         .eq(KnowledgeBase::getName, knowledgeBaseId.trim())
+                        .in(KnowledgeBase::getOwner, visibleOwners())
                         .last("LIMIT 1"));
                 if (named != null) {
                     return named;
@@ -415,6 +421,7 @@ public class KnowledgeBaseService {
         }
         KnowledgeBase existing = knowledgeBaseMapper.selectOne(new LambdaQueryWrapper<KnowledgeBase>()
                 .eq(KnowledgeBase::getName, "默认知识库")
+                .in(KnowledgeBase::getOwner, visibleOwners())
                 .last("LIMIT 1"));
         if (existing != null) {
             return existing;
@@ -424,7 +431,7 @@ public class KnowledgeBaseService {
         request.setDescription("工作流运行时自动写入的默认知识库");
         request.setEmbeddingModel(embeddingModel);
         Map<String, Object> created = createKnowledgeBase(request);
-        return requireBaseUnscoped(((Number) created.get("id")).longValue());
+        return requireBaseForRuntime(((Number) created.get("id")).longValue());
     }
 
     private Long resolveBaseId(String knowledgeBaseId) {
@@ -447,16 +454,27 @@ public class KnowledgeBaseService {
     }
 
     /**
-     * 仅做存在性校验（迭代7 A2）：运行时路径（工作流节点执行、统计刷新）使用。
-     * 这些路径运行在执行线程、没有 HTTP 用户上下文，其知识库 id 来自工作流配置
-     * （属于用户对自己所配工作流的间接授权），因此不做归属过滤，避免误伤既有工作流。
+     * 运行时路径归属校验（迭代9 P0-3）：工作流节点执行、文档列表、统计刷新使用。
+     *
+     * <p>与 {@link #requireBase(Long)} 的区别仅在于错误语义的一致性——
+     * 两者都用 {@link #visibleOwners()} 过滤（本人 + system）。此前运行时路径
+     * 走的是「只校验存在」的 unscoped 版本，导致用户可在自己工作流里把
+     * {@code knowledgeBaseId} 指向他人私有知识库进行检索/写入，归属隔离在运行时被击穿。
+     *
+     * <p>执行线程的用户/租户上下文由引擎与 SSE/并行调度/HITL 补执行链路显式传递
+     * （见 ExecutionController、ParallelDAGScheduler、HitlResumeService）。
      */
-    private KnowledgeBase requireBaseUnscoped(Long id) {
+    private KnowledgeBase requireBaseForRuntime(Long id) {
         KnowledgeBase base = knowledgeBaseMapper.selectById(id);
-        if (base == null) {
-            throw new IllegalArgumentException("知识库不存在");
+        if (base == null || !isVisibleOwner(base.getOwner())) {
+            throw new IllegalArgumentException("知识库不存在或无权访问");
         }
         return base;
+    }
+
+    /** 归属可见性：owner 为空的历史数据视为系统资源（迁移前兼容），其余按「本人 + system」。 */
+    private boolean isVisibleOwner(String owner) {
+        return owner == null || owner.isBlank() || visibleOwners().contains(owner);
     }
 
     /**
@@ -485,8 +503,8 @@ public class KnowledgeBaseService {
     }
 
     private void refreshBaseStats(Long baseId, String status) {
-        // 运行时统计刷新：执行线程无用户上下文，用 unscoped 版本
-        KnowledgeBase base = requireBaseUnscoped(baseId);
+        // 统计刷新发生在已通过归属校验的写入路径之后，这里仍走运行时归属校验保持一致
+        KnowledgeBase base = requireBaseForRuntime(baseId);
         Long documentCount = knowledgeDocumentMapper.selectCount(new LambdaQueryWrapper<KnowledgeDocument>()
                 .eq(KnowledgeDocument::getKnowledgeBaseId, baseId));
         Long chunkCount = knowledgeChunkMapper.selectCount(new LambdaQueryWrapper<KnowledgeChunk>()

@@ -151,6 +151,13 @@ public class ExecutionController {
     @GetMapping("/{id}/executions/{executionId}/snapshots")
     public Result<List<ExecutionSnapshotResponse>> getExecutionSnapshots(@PathVariable Long id,
                                                                          @PathVariable Long executionId) {
+        // 迭代9 P0-2：快照/变量属执行产物，同样受工作流归属保护——
+        // 修复前只校验 flowId 匹配，枚举自增 executionId 即可读他人节点快照与执行变量。
+        try {
+            workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            return Result.error(e.getMessage());
+        }
         ExecutionRecord record = executionRecordMapper.selectById(executionId);
         if (record == null || !id.equals(record.getFlowId())) {
             return Result.error("执行记录不存在");
@@ -168,6 +175,12 @@ public class ExecutionController {
     @GetMapping("/{id}/executions/{executionId}/variables")
     public Result<List<ExecutionVariableResponse>> getExecutionVariables(@PathVariable Long id,
                                                                          @PathVariable Long executionId) {
+        // 迭代9 P0-2：同 getExecutionSnapshots，补工作流归属校验
+        try {
+            workflowService.getOwnedWorkflow(id);
+        } catch (IllegalArgumentException e) {
+            return Result.error(e.getMessage());
+        }
         ExecutionRecord record = executionRecordMapper.selectById(executionId);
         if (record == null || !id.equals(record.getFlowId())) {
             return Result.error("执行记录不存在");

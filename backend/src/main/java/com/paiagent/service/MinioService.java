@@ -1,6 +1,6 @@
 package com.paiagent.service;
 
-import com.paiagent.common.UrlSafetyValidator;
+import com.paiagent.common.SafeHttpFetcher;
 import com.paiagent.config.MinioConfig;
 import io.minio.BucketExistsArgs;
 import io.minio.MakeBucketArgs;
@@ -12,8 +12,6 @@ import org.springframework.stereotype.Service;
 
 import java.io.ByteArrayInputStream;
 import java.io.InputStream;
-import java.net.HttpURLConnection;
-import java.net.URI;
 
 @Slf4j
 @Service
@@ -24,7 +22,10 @@ public class MinioService {
 
     /** 读取超时（毫秒）：转存大文件时给足时间。 */
     private static final int READ_TIMEOUT_MS = 30000;
-    
+
+    /** 单次 URL 转存的大小上限（迭代9 P1-7）：修复前无上限，超大响应可打爆磁盘/内存。 */
+    private static final int MAX_TRANSFER_BYTES = 32 * 1024 * 1024;
+
     @Autowired
     private MinioClient minioClient;
     
@@ -83,23 +84,15 @@ public class MinioService {
      * 补齐与 {@code WebFetchNodeExecutor} 同级的防护——协议与内网地址校验、
      * 连接/读取超时、不自动跟随重定向；同时修掉原先「两次 {@code openConnection()}
      * 导致内容长度可能取自另一条连接」的问题。
+     *
+     * <p>迭代9 P1-7：抓取统一收敛到 {@link SafeHttpFetcher#fetchBytes}（逐跳安全校验 +
+     * 超时 + 大小上限），修复前 {@code putObject(stream, contentLength, -1)} 对
+     * 「未声明长度」的响应会无上限转存，磁盘/内存可被打爆。
      */
     public String uploadFromUrl(String fileUrl, String objectName, String contentType) throws Exception {
         log.info("从 URL 下载文件: {}", fileUrl);
-        UrlSafetyValidator.assertSafeOutbound(fileUrl);
-
-        HttpURLConnection connection = (HttpURLConnection) URI.create(fileUrl.trim()).toURL().openConnection();
-        try {
-            connection.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            connection.setReadTimeout(READ_TIMEOUT_MS);
-            connection.setInstanceFollowRedirects(false);
-            long size = connection.getContentLengthLong();
-            try (InputStream inputStream = connection.getInputStream()) {
-                return uploadFile(objectName, inputStream, contentType, size);
-            }
-        } finally {
-            connection.disconnect();
-        }
+        byte[] data = SafeHttpFetcher.fetchBytes(fileUrl, CONNECT_TIMEOUT_MS, READ_TIMEOUT_MS, MAX_TRANSFER_BYTES);
+        return uploadFromBytes(data, objectName, contentType);
     }
     
     /**

@@ -8,6 +8,7 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.data.redis.core.ValueOperations;
 
 import java.time.Duration;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.Set;
 
@@ -34,11 +35,24 @@ class IdempotencyGuardTest {
     private ValueOperations<String, String> valueOperations;
     private ObjectMapper objectMapper;
 
+    /** 模拟 Redis 键空间：使 SETNX / GET / DELETE 语义真实可测（含在途标记的读写与释放）。 */
+    private final Map<String, String> redisStore = new HashMap<>();
+
     private IdempotencyGuard createGuard(long ttlMillis) {
         redisTemplate = mock(StringRedisTemplate.class);
         valueOperations = mock(ValueOperations.class);
         objectMapper = new ObjectMapper();
+        redisStore.clear();
         when(redisTemplate.opsForValue()).thenReturn(valueOperations);
+        // 模拟「健康但为空」的 Redis。注意：Mockito 对返回 Boolean 的方法默认给 false（而非 null），
+        // 若不显式模拟 SETNX 语义，「Redis 明确拒绝」与「Redis 不可用」将无法区分。
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .thenAnswer(inv -> redisStore.putIfAbsent(
+                        inv.getArgument(0, String.class), inv.getArgument(1, String.class)) == null);
+        when(valueOperations.get(anyString()))
+                .thenAnswer(inv -> redisStore.get(inv.getArgument(0, String.class)));
+        when(redisTemplate.delete(anyString()))
+                .thenAnswer(inv -> redisStore.remove(inv.getArgument(0, String.class)) != null);
         return new IdempotencyGuard(ttlMillis, redisTemplate, objectMapper);
     }
 
@@ -149,5 +163,84 @@ class IdempotencyGuardTest {
         guard.put("a", Map.of("x", 1));
         guard.clear();
         verify(redisTemplate).delete(Set.of("paiagent:idem:a", "paiagent:idem:b"));
+    }
+
+    // ------------------------------------------------------------------
+    // 迭代9 P1-8：原子占位（tryClaim）与归还（release）
+
+    @Test
+    void tryClaimShouldSucceedFirstThenRejectSecond() {
+        IdempotencyGuard guard = createGuard(600000);
+        assertTrue(guard.tryClaim("claim-1"), "首次占位应成功");
+        assertFalse(guard.tryClaim("claim-1"), "同一键第二次占位必须失败（有并发在途）");
+    }
+
+    @Test
+    void tryClaimShouldNotBeVisibleAsCachedResult() {
+        IdempotencyGuard guard = createGuard(600000);
+        assertTrue(guard.tryClaim("claim-2"));
+        // 在途占位（value=null）不是已产出结果；否则抢占者会拿到空结果提前返回
+        assertNull(guard.getIfPresent("claim-2"));
+    }
+
+    @Test
+    void putAfterClaimShouldExposeResult() {
+        IdempotencyGuard guard = createGuard(600000);
+        assertTrue(guard.tryClaim("claim-3"));
+        guard.put("claim-3", Map.of("r", 1));
+        assertEquals(1, guard.getIfPresent("claim-3").get("r"));
+    }
+
+    @Test
+    void releaseShouldClearClaimSoRetryCanProceed() {
+        IdempotencyGuard guard = createGuard(600000);
+        assertTrue(guard.tryClaim("claim-4"));
+        guard.release("claim-4");
+        assertTrue(guard.tryClaim("claim-4"), "释放后应可重新占位（失败重试路径）");
+    }
+
+    @Test
+    void releaseShouldNotEvictCompletedResult() {
+        IdempotencyGuard guard = createGuard(600000);
+        assertTrue(guard.tryClaim("claim-5"));
+        guard.put("claim-5", Map.of("r", 2));
+        guard.release("claim-5");
+        // 已产出结果的键不得被 release 清除，否则幂等失效
+        assertEquals(2, guard.getIfPresent("claim-5").get("r"));
+    }
+
+    @Test
+    void tryClaimShouldWriteRedisInFlightMarkerWithTtl() {
+        IdempotencyGuard guard = createGuard(600000);
+        when(valueOperations.setIfAbsent(eq("paiagent:idem:redis-claim"), anyString(), any(Duration.class)))
+                .thenReturn(true);
+
+        assertTrue(guard.tryClaim("redis-claim"));
+
+        // 跨进程占位：Redis 侧 SETNX + TTL，值为在途标记（非 JSON，读取侧天然按未命中处理）
+        verify(valueOperations).setIfAbsent(
+                eq("paiagent:idem:redis-claim"),
+                eq("__paiagent_idem_in_flight__"),
+                argThat(d -> d != null && Math.abs(d.toMillis() - 600000) < 1000));
+    }
+
+    @Test
+    void tryClaimShouldFallBackToMemoryWhenRedisUnavailable() {
+        IdempotencyGuard guard = createGuard(600000);
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class)))
+                .thenThrow(new RuntimeException("redis down"));
+
+        // Redis 故障时仍须以进程内占位保证单实例幂等
+        assertTrue(guard.tryClaim("fallback-1"));
+        assertFalse(guard.tryClaim("fallback-1"));
+    }
+
+    @Test
+    void tryClaimShouldRespectRedisOwnershipAcrossProcesses() {
+        IdempotencyGuard guard = createGuard(600000);
+        // 另一实例已持有该键（SETNX 返回 false），且本进程内存也未曾见过
+        when(valueOperations.setIfAbsent(anyString(), anyString(), any(Duration.class))).thenReturn(false);
+
+        assertFalse(guard.tryClaim("cross-claim"), "跨实例已被占有时本实例不得重复执行");
     }
 }
