@@ -3,6 +3,8 @@ package com.paiagent.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.BoundedStreamReader;
+import com.paiagent.common.UrlSafetyValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
@@ -30,6 +32,12 @@ public class VolcengineAgentPlanClient {
 
     private static final int CONNECT_TIMEOUT_MS = 15_000;
     private static final int READ_TIMEOUT_MS = 120_000;
+
+    /**
+     * 响应体读取上限（16MB）：JSON 响应/错误体超过此值即中止，避免恶意或异常端点
+     * 返回超大响应体打爆内存（替代无上限的 {@code readAllBytes()}）。
+     */
+    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
     /** HTTP 交换结果：状态码 + 响应正文。 */
     record HttpResponse(int status, String body) {
@@ -62,6 +70,10 @@ public class VolcengineAgentPlanClient {
     /** 生产传输层：HttpURLConnection 单次交换，不跟随重定向（由调用方语义决定重试）。 */
     private static HttpResponse httpExchange(String url, String method, Map<String, String> headers, String body)
             throws IOException {
+        // 迭代10 P1：生产传输层入口做出站安全校验——apiUrl 来自节点/全局配置
+        // （导入的工作流即可携带任意值），未校验时会把 API Key 发往内网/云元数据端点。
+        // 单测注入的假传输层不经过本方法，不受影响。
+        UrlSafetyValidator.assertSafeOutbound(url);
         HttpURLConnection conn = (HttpURLConnection) URI.create(url).toURL().openConnection();
         try {
             conn.setRequestMethod(method);
@@ -74,7 +86,9 @@ public class VolcengineAgentPlanClient {
             }
             int status = conn.getResponseCode();
             InputStream stream = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream();
-            String text = stream == null ? "" : new String(stream.readAllBytes(), StandardCharsets.UTF_8);
+            // 迭代10 P1：限长读取替代 readAllBytes()
+            String text = stream == null ? "" : new String(
+                    BoundedStreamReader.readCapped(stream, MAX_RESPONSE_BYTES), StandardCharsets.UTF_8);
             return new HttpResponse(status, text);
         } finally {
             conn.disconnect();

@@ -2,10 +2,13 @@ package com.paiagent.service;
 
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.BoundedStreamReader;
+import com.paiagent.common.UrlSafetyValidator;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -20,6 +23,12 @@ public class AgnesVideoClient {
     private static final int DEFAULT_FRAME_RATE = 24;
     private static final int DEFAULT_DURATION_SECONDS = 5;
     private static final int MAX_NUM_FRAMES = 441;
+
+    /**
+     * 响应体读取上限（16MB）：JSON 响应/错误体超过此值即中止，避免恶意或异常端点
+     * 返回超大响应体打爆内存（替代无上限的 {@code readAllBytes()}）。
+     */
+    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
     public String createVideoTask(ResolvedAgentPlanConfig config, String prompt, String referenceImageUrl,
                                   int duration, String resolution, String ratio, String cameraMotion) throws IOException {
@@ -122,6 +131,9 @@ public class AgnesVideoClient {
     }
 
     private HttpURLConnection openConnection(String endpoint, String method, String apiKey) throws IOException {
+        // 迭代10 P1：apiUrl 来自节点/全局配置（导入的工作流即可携带任意值），未校验时
+        // 会把 API Key 发往内网/云元数据端点——与 SafeHttpFetcher / TTS / LLM 同一出站策略
+        UrlSafetyValidator.assertSafeOutbound(endpoint);
         URL url = URI.create(endpoint).toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod(method);
@@ -135,12 +147,18 @@ public class AgnesVideoClient {
     private JSONObject readResponse(HttpURLConnection conn) throws IOException {
         String requestUrl = conn.getURL().toString();
         int status = conn.getResponseCode();
-        byte[] bytes = (status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()).readAllBytes();
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        if (status < 200 || status >= 300) {
-            throw new IOException("Agnes 视频生成调用失败, endpoint=" + requestUrl + ", HTTP " + status + ": " + text);
+        // 迭代10 P1：限长读取替代 readAllBytes()，并确保连接释放
+        // （修复前流未关闭、conn 未 disconnect，keep-alive 连接会泄漏到 GC）
+        try (InputStream is = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()) {
+            byte[] bytes = BoundedStreamReader.readCapped(is, MAX_RESPONSE_BYTES);
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            if (status < 200 || status >= 300) {
+                throw new IOException("Agnes 视频生成调用失败, endpoint=" + requestUrl + ", HTTP " + status + ": " + text);
+            }
+            return JSON.parseObject(text);
+        } finally {
+            conn.disconnect();
         }
-        return JSON.parseObject(text);
     }
 
     private String normalizeBaseUrl(String apiUrl) {

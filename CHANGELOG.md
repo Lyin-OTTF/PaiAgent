@@ -4,6 +4,31 @@
 
 ---
 
+## v2.5.0 — 迭代10：SSRF 收口与出站响应加固（2026-10-19）
+
+把「上游不可信」这条主线从 WebFetch / TTS 补齐到全部出站通道，并收口响应体读取与异常回显。
+
+**🔴 高危：最后一个未设防的出站通道**
+- `ChatClientFactory.createClient` 补 `UrlSafetyValidator.assertSafeOutbound(apiUrl)`。apiUrl 来自节点配置或全局配置，导入/共享的工作流即可携带任意值，而建连即带着 apiKey 向该地址发请求——此前 WebFetch 工具与 Step-TTS 都已校验，唯独 LLM 主路径没有，等于内网地址唯一未设防的出站通道（可打 169.254.169.254 云元数据窃取临时凭证）。
+- `AgnesVideoClient` / `OpenAiCompatibleImageClient` / `StepFunImageClient` / `VolcengineAgentPlanClient` 四个 provider 客户端的建连方法同样补校验，与 SafeHttpFetcher / TTS / LLM 同一策略。
+
+**🟡 中危：响应体无上限与连接泄漏**
+- 四个客户端的 `readAllBytes()` 改为 `BoundedStreamReader.readCapped(is, 16MB)`，超限显式抛错、不做静默截断（半截 JSON/二进制被当成完整响应，错误更难排查）。
+- 补 try-with-resources + `finally { conn.disconnect(); }`：修复前流未关闭、连接未断开，keep-alive 连接会泄漏到 GC。
+
+**🟡 中危：异常细节回显**
+- `ExecutionController` / `GovernanceController` / `LLMConfigController` 不再无条件回显 `e.getMessage()`：业务异常（`IllegalArgumentException` / `IllegalStateException`）保留可读文案，未预期异常只回通用文案，细节仅入日志，与 `GlobalExceptionHandler` 策略一致。
+- `LLMGlobalConfigService.setDefaultConfig` 的 `RuntimeException` 改为 `IllegalArgumentException`，使控制器能区分业务异常与未预期异常。
+
+**测试**
+- 新增 `ProviderClientSsrfGuardTest`：反射直调四个客户端的私网建连方法，锁定「云元数据 / 回环 / 私网 / 非 http(s) 协议在建连前即被拒绝」。安全属性必须有测试锁定，否则重构时弄掉校验没有任何用例会挂。
+- 新增 `BoundedStreamReaderTest`（5 例）。
+- `ChatClientFactoryTest` 改用 RFC 5737 文档段 192.0.2.0/24 作为「公网形态」地址，字面量 IP 不触发 DNS，保持离线可跑。
+
+**质量门**：全量 **501** 项测试通过（491 → +10）。
+
+---
+
 ## v2.4.0 — 迭代9：全仓评审修复（2026-10-16）
 
 依据 `docs/全仓代码评审报告.md` 第九章（第 3 轮审议）清单逐项闭环，处置记录见该报告新增的第十章。

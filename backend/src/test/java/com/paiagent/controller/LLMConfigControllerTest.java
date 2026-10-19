@@ -151,7 +151,9 @@ class LLMConfigControllerTest {
     @Test
     @DisplayName("设置默认接口：失败时错误信封带原因，不回显堆栈")
     void setDefaultConfigFailureEnvelope() throws Exception {
-        doThrow(new RuntimeException("配置不存在")).when(llmGlobalConfigService).setDefaultConfig(9L);
+        // 迭代10：服务层「配置不存在」为业务校验异常（IllegalArgumentException），
+        // 控制器保留其可读消息；未预期异常才收敛为通用文案
+        doThrow(new IllegalArgumentException("配置不存在")).when(llmGlobalConfigService).setDefaultConfig(9L);
 
         mockMvc.perform(post("/api/llm-config/9/default"))
                 .andExpect(status().isOk())

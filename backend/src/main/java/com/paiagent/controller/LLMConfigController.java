@@ -6,6 +6,7 @@ import com.paiagent.entity.LLMGlobalConfig;
 import com.paiagent.service.LLMGlobalConfigService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.web.bind.annotation.*;
@@ -18,6 +19,7 @@ import java.util.List;
  * <p>迭代7（评审报告 A3）：所有出站响应统一对 {@code apiKey} 打码下发——
  * 修复前四个查询接口直接返回实体，任何登录用户都能读到全部供应商的明文密钥。
  */
+@Slf4j
 @Tag(name = "全局模型配置接口")
 @RestController
 @RequestMapping("/api/llm-config")
@@ -85,8 +87,13 @@ public class LLMConfigController {
         try {
             llmGlobalConfigService.setDefaultConfig(id);
             return Result.success();
-        } catch (Exception e) {
+        } catch (IllegalArgumentException e) {
+            // 业务校验消息（如「配置不存在」）为可读文案，保留回显
             return Result.error("设置默认配置失败: " + e.getMessage());
+        } catch (Exception e) {
+            // 迭代10：未预期异常细节只入日志，回显通用文案
+            log.error("设置默认配置失败, id={}", id, e);
+            return Result.error("设置默认配置失败，请稍后重试");
         }
     }
 

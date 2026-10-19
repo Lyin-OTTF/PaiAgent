@@ -12,6 +12,7 @@ import com.paiagent.service.ApprovalService;
 import com.paiagent.service.HitlResumeService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.LinkedHashMap;
@@ -24,6 +25,7 @@ import java.util.Map;
  * <p>迭代6：审批通过后异步触发 {@link HitlResumeService} 补执行——
  * 响应不阻塞续跑（LLM 多步），补执行结果经审批记录 resumeStatus 与执行记录可观测。
  */
+@Slf4j
 @Tag(name = "受限自治层治理接口")
 @RestController
 @RequestMapping("/api/governance")
@@ -65,7 +67,10 @@ public class GovernanceController {
             hitlResumeService.resumeAsync(approved);
             return Result.success(approved);
         } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
+            // 迭代10：不再无条件回显 e.getMessage()——业务异常（记录不存在/状态冲突）
+            // 消息为可读文案，但未预期异常（NPE/DB 错误）的 message 可能含内部细节
+            log.error("审批通过失败, id={}", id, e);
+            return Result.error(sanitizeApprovalError(e));
         }
     }
 
@@ -79,8 +84,21 @@ public class GovernanceController {
             String note = request != null ? request.getNote() : null;
             return Result.success(approvalService.reject(id, approver, note));
         } catch (RuntimeException e) {
-            return Result.error(e.getMessage());
+            // 迭代10：同 approve——业务异常保留可读消息，未预期异常只回通用文案
+            log.error("审批拒绝失败, id={}", id, e);
+            return Result.error(sanitizeApprovalError(e));
         }
+    }
+
+    /**
+     * 审批异常脱敏：业务参数/状态异常（{@link IllegalArgumentException} /
+     * {@link IllegalStateException}）的消息为可读业务文案，直接回显；
+     * 其余未预期异常只回通用文案，细节仅入日志（与 {@code GlobalExceptionHandler} 策略一致）。
+     */
+    private static String sanitizeApprovalError(RuntimeException e) {
+        return e instanceof IllegalArgumentException || e instanceof IllegalStateException
+                ? e.getMessage()
+                : "审批操作失败，请稍后重试";
     }
 
     @Operation(summary = "查询工具调用审计日志（可按工具名/动作状态过滤）")

@@ -112,7 +112,10 @@ public class ExecutionController {
             ExecutionResponse response = executor.execute(workflow, request.getInputData());
             return Result.success(response);
         } catch (Exception e) {
-            return Result.error("工作流执行失败: " + e.getMessage());
+            // 迭代10：异常细节只入日志，回显通用文案——e.getMessage() 可能携带上游服务
+            // 报错、SQL 片段等内部实现细节（与 GlobalExceptionHandler 同一策略）
+            log.error("工作流执行失败, workflowId={}", id, e);
+            return Result.error("工作流执行失败，请稍后重试");
         }
     }
 
@@ -220,8 +223,9 @@ public class ExecutionController {
             }
             return Result.error("当前执行引擎暂不支持断点续执行");
         } catch (Exception e) {
-            log.error("断点续执行失败", e);
-            return Result.error("断点续执行失败: " + e.getMessage());
+            log.error("断点续执行失败, workflowId={}, executionId={}", id, executionId, e);
+            // 迭代10：细节已入日志，回显通用文案
+            return Result.error("断点续执行失败，请稍后重试");
         }
     }
     
@@ -270,8 +274,9 @@ public class ExecutionController {
                 executor.executeWithCallback(workflow, inputData, eventCallback);
                 emitter.complete();
             } catch (Exception e) {
-                log.error("工作流执行失败", e);
-                sendStreamError(emitter, e.getMessage());
+                log.error("工作流执行失败, workflowId={}", id, e);
+                // 迭代10：SSE 错误事件同样只回通用文案，细节仅入日志
+                sendStreamError(emitter, "工作流执行失败，请稍后重试");
             } finally {
                 UserContext.clear();
                 TenantContext.clear();

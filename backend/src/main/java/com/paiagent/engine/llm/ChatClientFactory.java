@@ -1,5 +1,6 @@
 package com.paiagent.engine.llm;
 
+import com.paiagent.common.UrlSafetyValidator;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.ai.chat.client.ChatClient;
 import org.springframework.ai.chat.model.ChatModel;
@@ -32,7 +33,13 @@ import java.util.Locale;
  * <p>说明：{@code WebClient}（流式路径）的超时依赖响应式连接器，本项目未引入
  * reactor-netty（编译期不可用），故流式分支保持默认；同步 {@code call()} 路径
  * 已由 RestClient 超时覆盖——而它正是会阻塞线程池的那条路径。
- */
+ *
+ * <p><b>迭代10 P1（SSRF 收口）</b>：{@code apiUrl} 来自节点配置或全局配置——
+     * 导入/共享的工作流即可携带任意 {@code apiUrl}，而创建客户端即会带着 {@code apiKey}
+     * 向该地址发请求。此前 WebFetch 工具与 Step-TTS 都已接入
+     * {@link UrlSafetyValidator}，唯独 LLM 主路径没有，形成「内网地址唯一未设防的
+     * 出站通道」（可打云元数据 169.254.169.254 窃取临时凭证）。这里在唯一入口统一校验。
+     */
 @Slf4j
 @Component
 public class ChatClientFactory {
@@ -75,6 +82,11 @@ public class ChatClientFactory {
      */
     public ChatClient createClient(String provider, String apiUrl, String apiKey,
                                    String model, Double temperature) {
+        // 迭代10 P1：出站安全校验——与 SafeHttpFetcher / TTS 同一策略。
+        // apiKey 会随请求发往该地址，未校验等同把密钥交给任意内网服务；
+        // 阻断回环/私网/链路本地/云元数据段与非 http(s) 协议。
+        UrlSafetyValidator.assertSafeOutbound(apiUrl);
+
         String normalizedProvider = normalizeProvider(provider);
         String normalizedModel = normalizeModel(normalizedProvider, model);
         if (!normalizedModel.equals(model)) {

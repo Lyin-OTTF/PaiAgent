@@ -47,7 +47,9 @@ public class LLMGlobalConfigService extends ServiceImpl<LLMGlobalConfigMapper, L
     public void setDefaultConfig(Long id) {
         LLMGlobalConfig config = this.getById(id);
         if (config == null) {
-            throw new RuntimeException("配置不存在");
+            // 迭代10：业务校验异常统一用 IllegalArgumentException——GlobalExceptionHandler
+            // 映射为 400 可读消息，控制器也能与「未预期异常只回通用文案」的策略区分
+            throw new IllegalArgumentException("配置不存在");
         }
 
         // 清除该提供商的其他默认配置

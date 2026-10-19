@@ -3,10 +3,13 @@ package com.paiagent.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.BoundedStreamReader;
+import com.paiagent.common.UrlSafetyValidator;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -23,6 +26,12 @@ public class StepFunImageClient {
     private static final int MAX_NEGATIVE_PROMPT_LENGTH = 512;
     private static final String STEP_IMAGE_EDIT_2 = "step-image-edit-2";
     private static final String STEP_2X_LARGE = "step-2x-large";
+
+    /**
+     * 响应体读取上限（16MB）：JSON 响应/错误体超过此值即中止，避免恶意或异常端点
+     * 返回超大响应体打爆内存（替代无上限的 {@code readAllBytes()}）。
+     */
+    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
     public Map<String, Object> generateImage(ResolvedAgentPlanConfig config, String prompt,
                                              String referenceImageUrl, String size, int count,
@@ -75,7 +84,11 @@ public class StepFunImageClient {
     }
 
     private HttpURLConnection openConnection(ResolvedAgentPlanConfig config) throws IOException {
-        URL url = URI.create(normalizeImageEndpoint(config.apiUrl(), config.model())).toURL();
+        String endpoint = normalizeImageEndpoint(config.apiUrl(), config.model());
+        // 迭代10 P1：apiUrl 来自节点/全局配置（导入的工作流即可携带任意值），未校验时
+        // 会把 API Key 发往内网/云元数据端点——与 SafeHttpFetcher / TTS / LLM 同一出站策略
+        UrlSafetyValidator.assertSafeOutbound(endpoint);
+        URL url = URI.create(endpoint).toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(15_000);
@@ -87,12 +100,17 @@ public class StepFunImageClient {
 
     private JSONObject readResponse(HttpURLConnection conn) throws IOException {
         int status = conn.getResponseCode();
-        byte[] bytes = (status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()).readAllBytes();
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        if (status < 200 || status >= 300) {
-            throw new IOException("StepFun 图片生成调用失败, HTTP " + status + ": " + text);
+        // 迭代10 P1：限长读取替代 readAllBytes()，并确保连接释放
+        try (InputStream is = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()) {
+            byte[] bytes = BoundedStreamReader.readCapped(is, MAX_RESPONSE_BYTES);
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            if (status < 200 || status >= 300) {
+                throw new IOException("StepFun 图片生成调用失败, HTTP " + status + ": " + text);
+            }
+            return JSON.parseObject(text);
+        } finally {
+            conn.disconnect();
         }
-        return JSON.parseObject(text);
     }
 
     String normalizeImageEndpoint(String apiUrl, String model) {

@@ -282,6 +282,10 @@ public class TTSNodeExecutor implements NodeExecutor {
             try {
                 String baseUrl = normalizeDashScopeBaseApiUrl(config.apiUrl());
                 if (StringUtils.hasText(baseUrl)) {
+                    // 迭代10 P1：与 step 分支对齐——DashScope baseUrl 同样来自节点配置
+                    // （用户/导入的工作流可控），做出站安全校验后才写入 SDK 全局地址。
+                    // 留空时用 SDK 内置默认地址（公网），无需校验。
+                    UrlSafetyValidator.assertSafeOutbound(baseUrl);
                     Constants.baseHttpApiUrl = baseUrl;
                 }
                 result = new MultiModalConversation().call(param);

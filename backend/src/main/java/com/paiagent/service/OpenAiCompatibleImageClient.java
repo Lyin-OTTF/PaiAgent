@@ -3,10 +3,13 @@ package com.paiagent.service;
 import com.alibaba.fastjson2.JSON;
 import com.alibaba.fastjson2.JSONArray;
 import com.alibaba.fastjson2.JSONObject;
+import com.paiagent.common.BoundedStreamReader;
+import com.paiagent.common.UrlSafetyValidator;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.net.HttpURLConnection;
 import java.net.URI;
 import java.net.URL;
@@ -18,6 +21,12 @@ import java.util.Map;
 
 @Service
 public class OpenAiCompatibleImageClient {
+
+    /**
+     * 响应体读取上限（16MB）：兼容 {@code response_format=b64_json} 的内联图片
+     * （大图 base64 可达数 MB），同时避免恶意/异常端点用超大响应体打爆内存。
+     */
+    private static final int MAX_RESPONSE_BYTES = 16 * 1024 * 1024;
 
     public Map<String, Object> generateImage(ResolvedAgentPlanConfig config, String prompt,
                                              String referenceImageUrl, String size, int count,
@@ -88,7 +97,11 @@ public class OpenAiCompatibleImageClient {
     }
 
     private HttpURLConnection openConnection(ResolvedAgentPlanConfig config) throws IOException {
-        URL url = URI.create(normalizeImageEndpoint(config.apiUrl(), config.provider())).toURL();
+        String endpoint = normalizeImageEndpoint(config.apiUrl(), config.provider());
+        // 迭代10 P1：apiUrl 来自节点/全局配置（导入的工作流即可携带任意值），未校验时
+        // 会把 API Key 发往内网/云元数据端点——与 SafeHttpFetcher / TTS / LLM 同一出站策略
+        UrlSafetyValidator.assertSafeOutbound(endpoint);
+        URL url = URI.create(endpoint).toURL();
         HttpURLConnection conn = (HttpURLConnection) url.openConnection();
         conn.setRequestMethod("POST");
         conn.setConnectTimeout(15_000);
@@ -101,12 +114,17 @@ public class OpenAiCompatibleImageClient {
     private JSONObject readResponse(HttpURLConnection conn) throws IOException {
         String requestUrl = conn.getURL().toString();
         int status = conn.getResponseCode();
-        byte[] bytes = (status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()).readAllBytes();
-        String text = new String(bytes, StandardCharsets.UTF_8);
-        if (status < 200 || status >= 300) {
-            throw new IOException("OpenAI 兼容图片生成调用失败, endpoint=" + requestUrl + ", HTTP " + status + ": " + text);
+        // 迭代10 P1：限长读取替代 readAllBytes()，并确保连接释放
+        try (InputStream is = status >= 200 && status < 300 ? conn.getInputStream() : conn.getErrorStream()) {
+            byte[] bytes = BoundedStreamReader.readCapped(is, MAX_RESPONSE_BYTES);
+            String text = new String(bytes, StandardCharsets.UTF_8);
+            if (status < 200 || status >= 300) {
+                throw new IOException("OpenAI 兼容图片生成调用失败, endpoint=" + requestUrl + ", HTTP " + status + ": " + text);
+            }
+            return JSON.parseObject(text);
+        } finally {
+            conn.disconnect();
         }
-        return JSON.parseObject(text);
     }
 
     String normalizeImageEndpoint(String apiUrl) {
