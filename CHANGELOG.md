@@ -4,6 +4,39 @@
 
 ---
 
+## v2.5.1 — HNSW 索引同 id 覆盖写越界修复（2026-10-25）
+
+**🔴 高危：覆盖写触发 `ArrayIndexOutOfBoundsException`，整次 upsert 中断**
+
+现象：对已存在的 id 覆盖写时，若被覆盖的正是当前入口节点，`upsert` 抛
+`ArrayIndexOutOfBoundsException: Index 1 out of bounds for length 1`
+（`HnswVectorIndex.greedyClosest:223` ← `upsert:114`）。知识库重建、同一片段重新入库走的都是覆盖写，
+一旦命中就是整批索引中断；且是否触发取决于随机层级与插入顺序，手工复现不稳定。
+
+根因（三处叠加，缺一不可）：
+1. `upsert` 先 `nodes.remove(id)` 再插入。若覆盖的是 entry，`entry` 会悬空指向已移出 `nodes` 的旧对象，
+   其 links 里的 id 解析到的却是本次新插入、层级更低的新节点。
+2. `greedyClosest` 把 current 移到邻居后，仍按入参 level 读 `current.links[level]`。邻居层级可能低于
+   level（覆盖写残留链接、`remove` 只打 tombstone 不重连），links 数组长度不足即越界。
+3. `beamSearch` 未过滤"本层不存在的节点"，同样会按 level 读 `links[level]`。
+
+修复：
+- 覆盖写改为「旧节点作导航起点、新节点就位后替换」。新节点必须先 `put`——否则反向连边后
+  `pruneNeighbors` 会把刚加的边当成悬空 id 剪掉（试过延后 put，recall 直接掉到 0.03）；
+  导航沿用旧节点引用；连边种子改取旧节点在该层的邻居（此时 id 已指向无链接的新节点，
+  用自身当种子会被 `selectNeighbors` 当自环过滤，退化成孤立点）；最后修正 `entry` 指向存活节点。
+- `greedyClosest` 的有效层级逐跳收紧为 `min(level, node.level)`，并把"同一次遍历内连续改进"改为
+  "每轮只移动一步最优邻居"，保证移动与层级收紧成对发生，不会用旧 lv 读新 current。
+- `beamSearch` 的种子收集与邻居扩展均跳过 `level > node.level` 的节点。
+
+**测试**
+- `HnswVectorIndexTest` 新增 `shouldRemainQueryableAfterOverwritingEveryId`：400 点插入 + 400 点全量覆盖写，
+  断言容量不变、覆盖后抽样 10 个点仍可检索。该场景此前完全没有用例覆盖——原有的 `shouldOverwriteSameId`
+  只有 1~2 个点，图里不存在层级差，永远触发不到这条路径。
+- 质量门：全量 **502** 项测试通过（501 → +1），含 `VectorIndexBenchmarkTest` 的 recall 断言。
+
+---
+
 ## v2.5.0 — 迭代10：SSRF 收口与出站响应加固（2026-10-19）
 
 把「上游不可信」这条主线从 WebFetch / TTS 补齐到全部出站通道，并收口响应体读取与异常回显。

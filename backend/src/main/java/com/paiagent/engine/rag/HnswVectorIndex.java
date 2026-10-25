@@ -90,21 +90,29 @@ public class HnswVectorIndex implements VectorIndex {
         }
         lock.lock();
         try {
-            if (!nodes.containsKey(id) && nodes.size() >= maxVectors) {
+            // 缺陷修复：覆盖写不再"先删后插"。原实现先 nodes.remove(id) 再插入，若覆盖的正是
+            // 入口节点，entry 就悬空指向已移出 nodes 的旧对象；旧对象 links 里的 id 会解析为
+            // 本次新插入的低层节点，贪心下降仍按旧层级访问 links，即越界。
+            // 现改为：旧节点留在变量里作导航起点，新节点先就位，连边后再修正 entry。
+            Node replaced = nodes.get(id);
+            if (replaced == null && nodes.size() >= maxVectors) {
                 // 迭代8（报告🟡8）：新 id 且已满 → 显式失败。同 id 覆盖写不放大内存，允许。
                 throw new IllegalStateException(String.format(
                         "向量索引容量上限 %d 已满，拒绝写入 id=%d（可通过 paiagent.rag.max-vectors 调整）",
                         maxVectors, id));
             }
-            nodes.remove(id);
             int level = randomLevel();
             Node node = new Node(id, normalized, level);
+            // 新节点必须先就位：后续反向连边后 pruneNeighbors 要能通过 nodes.get(id) 取到它，
+            // 否则刚加的这条反向边会被当成悬空 id 剪掉（尝试延后 put 会让 recall 直接崩掉）。
             nodes.put(id, node);
             if (entry == null) {
                 entry = node;
                 return;
             }
-            Node ep = entry;
+            // 覆盖写时以"被覆盖的旧节点对象"作为导航起点：它虽已不在 nodes 中，但 links 仍指向
+            // 图中存活的邻居，可作为下降入口；若改用新节点（links 为空）会退化成孤立点。
+            Node ep = replaced != null ? replaced : entry;
             int currentMax = ep.level;
             if (level > currentMax) {
                 entry = node;
@@ -114,9 +122,16 @@ public class HnswVectorIndex implements VectorIndex {
                 ep = greedyClosest(ep, normalized, lv);
             }
             // 目标层及以下：beam 搜索 + 双向连边
+            int topLevel = Math.min(level, currentMax);
             List<Long> candidates = new ArrayList<>();
-            candidates.add(ep.id);
-            for (int lv = Math.min(level, currentMax); lv >= 0; lv--) {
+            if (replaced != null) {
+                // 覆盖写：id 此刻已指向链接为空的新节点，不能拿它当种子（会被 selectNeighbors
+                // 当自环过滤掉），改取旧节点在该层的邻居作为入口，新节点才能接回原图的邻域。
+                candidates.addAll(replaced.links[Math.min(topLevel, replaced.level)]);
+            } else {
+                candidates.add(ep.id);
+            }
+            for (int lv = topLevel; lv >= 0; lv--) {
                 List<Long> beam = beamSearch(candidates, normalized, lv, EF_CONSTRUCTION);
                 for (Long neighborId : selectNeighbors(id, beam, normalized, M)) {
                     node.links[lv].add(neighborId);
@@ -133,6 +148,11 @@ public class HnswVectorIndex implements VectorIndex {
                     }
                 }
                 candidates = beam;
+            }
+            if (entry == replaced) {
+                // 入口节点被覆盖：入口必须指向存活节点，否则后续 search/upsert 都从图外的
+                // 旧对象出发（其 links 指向的 id 已被新节点接管，层级未必匹配）。
+                entry = node;
             }
         } finally {
             lock.unlock();
@@ -213,27 +233,43 @@ public class HnswVectorIndex implements VectorIndex {
 
     /**
      * 单层贪心：在当前节点的该层邻居里找更近者，直到局部最优。
+     *
+     * <p>缺陷修复：原实现把 current 移到邻居后，仍按入参 {@code level} 访问
+     * {@code current.links[level]}。但邻居的层级可能低于 level——同 id 覆盖写后旧链接会解析到
+     * 新插入的低层节点，remove 又只打 tombstone 不重连——此时 links 数组长度不足，直接抛
+     * ArrayIndexOutOfBoundsException。现将有效层级逐跳收紧为 {@code min(level, node.level)}，
+     * 并把"同一次遍历内连续改进"改为"每轮只移动一步最优邻居"：后者保证移动与层级收紧
+     * 在同一次迭代内成对发生，不会出现用旧 lv 读新 current 的情况。
      */
     private Node greedyClosest(Node start, float[] q, int level) {
         Node current = start;
+        int effectiveLevel = Math.min(level, current.level);
         double bestDistance = distance(q, current.vector);
-        boolean improved = true;
-        while (improved) {
-            improved = false;
-            for (Long neighborId : current.links[level]) {
+        while (true) {
+            Long nextId = null;
+            double nextDistance = bestDistance;
+            for (Long neighborId : current.links[effectiveLevel]) {
                 Node neighbor = nodes.get(neighborId);
                 if (neighbor == null) {
                     continue;
                 }
                 double d = distance(q, neighbor.vector);
-                if (d < bestDistance) {
-                    bestDistance = d;
-                    current = neighbor;
-                    improved = true;
+                if (d < nextDistance) {
+                    nextDistance = d;
+                    nextId = neighborId;
                 }
             }
+            if (nextId == null) {
+                return current;
+            }
+            Node next = nodes.get(nextId);
+            if (next == null) {
+                return current;
+            }
+            current = next;
+            bestDistance = nextDistance;
+            effectiveLevel = Math.min(effectiveLevel, current.level);
         }
-        return current;
     }
 
     /**
@@ -250,7 +286,9 @@ public class HnswVectorIndex implements VectorIndex {
                 continue;
             }
             Node node = nodes.get(id);
-            if (node == null) {
+            // 缺陷修复：该节点可能不存在于本层（覆盖写/删除后残留链接会指向低层 id），
+            // 直接读 links[level] 会越界，按"本层没有它"跳过。
+            if (node == null || level > node.level) {
                 continue;
             }
             visited.add(id);
@@ -269,7 +307,8 @@ public class HnswVectorIndex implements VectorIndex {
                 break; // 剩余候选不可能比当前最差结果更近，收敛
             }
             Node node = nodes.get(nearest.id());
-            if (node == null) {
+            // 同上：本层不存在的节点不能展开其 links[level]
+            if (node == null || level > node.level) {
                 continue;
             }
             for (Long neighborId : node.links[level]) {

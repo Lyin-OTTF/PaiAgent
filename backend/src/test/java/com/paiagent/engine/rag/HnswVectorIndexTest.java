@@ -153,4 +153,37 @@ class HnswVectorIndexTest {
         index.upsert(1L, randomVector());
         assertThrows(IllegalStateException.class, () -> index.upsert(2L, randomVector()));
     }
+
+    /**
+     * 回归：同 id 覆盖写（尤其是覆盖当前 entry）会留下指向低层节点的旧链接——旧节点被移出后
+     * 图里仍有节点把它当邻居，解析到的却是本次新插入、层级更低的新节点；贪心下降若继续按旧
+     * 层级读 links 即 ArrayIndexOutOfBoundsException。
+     *
+     * <p>此前该场景无任何用例覆盖（已有的同名覆盖用例只有 1~2 个点，图结构不存在层级差），
+     * 因此这个越界在线上会以"某次知识库重建中途抛数组越界"的形式出现，且不易复现。
+     */
+    @Test
+    void shouldRemainQueryableAfterOverwritingEveryId() {
+        HnswVectorIndex index = new HnswVectorIndex();
+        for (int i = 0; i < 400; i++) {
+            index.upsert((long) i, randomVector());
+        }
+        List<float[]> reloaded = new ArrayList<>();
+        for (int i = 0; i < 400; i++) {
+            float[] vector = randomVector();
+            reloaded.add(vector);
+            index.upsert((long) i, vector);
+        }
+        assertEquals(400, index.size(), "覆盖写不应改变向量数量");
+
+        int checked = 0;
+        for (int i = 0; i < 400; i += 40) {
+            List<Long> hitIds = index.search(reloaded.get(i), 5).stream()
+                    .map(VectorIndex.ScoredVector::id)
+                    .toList();
+            assertTrue(hitIds.contains((long) i), "覆盖写后 id=" + i + " 应仍可检索: " + hitIds);
+            checked++;
+        }
+        assertEquals(10, checked);
+    }
 }
