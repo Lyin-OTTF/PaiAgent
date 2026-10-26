@@ -372,6 +372,37 @@ class ParallelDAGSchedulerTest {
         assertEquals(Map.of("d", 1), outcome.getFinalOutput());
     }
 
+    /**
+     * 续跑起点不在流程图中时必须快速失败。
+     *
+     * <p>原实现把未知 startNodeId 当成"拓扑里找不到"静默降级为 startKnown=false，
+     * 于是所有节点都被视为活跃节点从头重跑，已执行节点的 LLM / 工具副作用被重放一遍，
+     * 而调用方拿到的却是一个 SUCCESS。这里锁定修复后的快速失败语义。
+     */
+    @Test
+    void resumeWithUnknownNode_shouldFailFast() {
+        List<WorkflowNode> nodes = List.of(node("a", "input"), node("b", "llm"), node("c", "output"));
+        List<WorkflowEdge> edges = List.of(edge("a", "b"), edge("b", "c"));
+        Map<String, Object> initialInput = new LinkedHashMap<>(Map.of("input", "seed"));
+
+        StubExecutor stub = new StubExecutor();
+        stub.on("a", input -> NodeOutcome.of(Map.of("a", 1)));
+        stub.on("b", input -> NodeOutcome.of(Map.of("b", 2)));
+        stub.on("c", input -> NodeOutcome.of(Map.of("c", 3)));
+
+        ResumeContext resume = ResumeContext.builder()
+                .startNodeId("ghost-node")
+                .initialInput(initialInput)
+                .build();
+
+        IllegalArgumentException ex = assertThrows(IllegalArgumentException.class,
+                () -> schedule(nodes, edges, stub, initialInput, resume, 4));
+        assertTrue(ex.getMessage().contains("ghost-node"),
+                "异常信息应包含非法的续跑起点 id，实际: " + ex.getMessage());
+        // 关键：失败发生在调度之前，不能有任何节点被实际执行（否则副作用已经放出去了）
+        assertTrue(stub.executed.isEmpty(), "非法续跑起点不应执行任何节点，实际执行: " + stub.executed);
+    }
+
     /** 边界：空工作流直接成功并返回初始输入；单节点无依赖可执行。 */
     @Test
     void edgeCases_emptyAndSingleNode() {

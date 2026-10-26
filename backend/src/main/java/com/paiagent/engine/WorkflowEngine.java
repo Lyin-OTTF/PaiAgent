@@ -709,11 +709,22 @@ public class WorkflowEngine implements WorkflowExecutor {
         executionSnapshotMapper.updateById(snapshot);
     }
 
-    private String resolveResumeStartNodeId(List<WorkflowNode> sortedNodes,
-                                            Map<String, ExecutionSnapshot> snapshotsByNode,
-                                            ResumeExecutionRequest request) {
+    /** 包级可见以便单测直接覆盖起点校验分支（该方法不依赖任何注入字段）。 */
+    String resolveResumeStartNodeId(List<WorkflowNode> sortedNodes,
+                                    Map<String, ExecutionSnapshot> snapshotsByNode,
+                                    ResumeExecutionRequest request) {
         if (request.getStartNodeId() != null && !request.getStartNodeId().isBlank()) {
-            return request.getStartNodeId();
+            String requested = request.getStartNodeId();
+            // 原实现直接把请求值透传下去，不校验它是否属于当前流程图，导致两条路径都出错：
+            // 串行引擎按 id 找起点永远匹配不到，跳过全部节点后返回 SUCCESS（假成功）；
+            // 并行引擎 startKnown=false 会退化为从头全量重跑，重放已执行节点的 LLM / 工具副作用。
+            // 续跑起点非法属于调用方契约错误，应当快速失败而不是产出「看起来成功」的结果。
+            boolean exists = sortedNodes.stream()
+                    .anyMatch(node -> requested.equals(node.getId()));
+            if (!exists) {
+                throw new IllegalArgumentException("续跑起点不存在于当前流程图中: " + requested);
+            }
+            return requested;
         }
 
         for (WorkflowNode node : sortedNodes) {

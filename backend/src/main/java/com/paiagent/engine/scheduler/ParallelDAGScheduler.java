@@ -335,6 +335,11 @@ public class ParallelDAGScheduler {
         Set<String> skippedSeed = resume.getSkippedNodes() != null ? resume.getSkippedNodes() : Set.of();
         String startNodeId = resume.getStartNodeId();
         boolean startKnown = startNodeId != null && topoIndex.containsKey(startNodeId);
+        // 起点不在拓扑里时不能静默按「全跑」处理：那样会把已执行节点的副作用再放一遍。
+        // 引擎侧 resolveResumeStartNodeId 已前置校验，这里是调度器独立使用时的兜底。
+        if (startNodeId != null && !startKnown) {
+            throw new IllegalArgumentException("续跑起点不存在于流程图拓扑中: " + startNodeId);
+        }
 
         for (WorkflowNode node : topoNodes) {
             String id = node.getId();

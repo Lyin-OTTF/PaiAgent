@@ -507,9 +507,29 @@ npm run dev
 
 #### 步骤 6：访问应用
 
-- 后端端口在 [application.yml](/Users/itwanger/Documents/GitHub/PaiAgent-one/backend/src/main/resources/application.yml#L1) 中配置，当前默认值是 `8084`
-- 前端通过 Vite 环境变量 `VITE_API_BASE_URL` 连接后端，默认示例见 [`frontend/.env.example`](/Users/itwanger/Documents/GitHub/PaiAgent-one/frontend/.env.example)
+- 后端端口在 [`backend/src/main/resources/application.yml`](backend/src/main/resources/application.yml) 中配置，当前默认值是 `8084`
+- 前端通过 Vite 环境变量 `VITE_API_BASE_URL` 连接后端，默认示例见 [`frontend/.env.example`](frontend/.env.example)
 - 前端不能直接读取 Spring Boot 的 `application.yml`，所以如果后端端口变化，需要同步调整 `frontend/.env.local`
+
+#### 步骤 7：运行测试
+
+```bash
+cd backend
+
+# 全量：507 个用例 / 88 个测试类
+./mvnw test
+
+# 只跑某个测试类（调试时最常用）
+./mvnw test -Dtest=HnswVectorIndexTest
+```
+
+> **需要先起 MySQL + Redis 的用例**：8 个标注 `@SpringBootTest` 的测试类会加载完整 Spring 上下文
+> （`LangGraph*Test`、`HybridRetrievalWiringTest`、`WorkflowEngineParallelConsistencyTest`、
+> `AgentMemoryServiceTest`、`PaiAgentApplicationTests`），依赖步骤 2 配置的 `MYSQL_*` / `REDIS_*` 可用。
+> 数据库连不上时这些用例会直接失败而不是跳过——刻意为之，避免"显示全绿但实际什么都没跑"。
+>
+> 其余用例是纯单测或内存实现（HNSW 索引、DAG 调度器、工具网关、评测集等），
+> 不依赖任何外部服务，单独跑某个类不需要起数据库。
 
 ### 🎬 快速演示
 

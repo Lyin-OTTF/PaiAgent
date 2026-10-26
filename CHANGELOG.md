@@ -135,6 +135,9 @@
 - 幂等键 SHA-256 规范化，消除碰撞。
 - 租户投影（`X-Tenant-Id`）真实生效 + 执行身份注入。
 - HITL 审批 **resume 闭环**：挂起快照 → 审批通过 → 断点续跑，不重放副作用。
+  链路已实现并由单测覆盖（`ApprovalServiceTest` / `HitlResumeServiceTest` / `HitlSuspendContextTest`）；
+  注意**默认不触发**——内置工具均为只读级别（`OBSERVE` / `DRAFT`），需在工具上声明
+  `requiresApproval = true` 或把节点 `autonomyLevel` 提到 `ESCALATE`，审批分支才会进入。
 - LLM 执行器 / 模板服务小缺陷修复。
 
 **质量门**：全量 **303** 项测试通过。
