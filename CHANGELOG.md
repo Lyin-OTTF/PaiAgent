@@ -33,7 +33,7 @@
 - `HnswVectorIndexTest` 新增 `shouldRemainQueryableAfterOverwritingEveryId`：400 点插入 + 400 点全量覆盖写，
   断言容量不变、覆盖后抽样 10 个点仍可检索。该场景此前完全没有用例覆盖——原有的 `shouldOverwriteSameId`
   只有 1~2 个点，图里不存在层级差，永远触发不到这条路径。
-- 质量门：全量 **502** 项测试通过（501 → +1），含 `VectorIndexBenchmarkTest` 的 recall 断言。
+- 质量门：全量 **507** 项测试通过，含 `VectorIndexBenchmarkTest` 的 recall 断言。
 
 ---
 

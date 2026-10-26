@@ -23,9 +23,18 @@ import java.util.Map;
  * 不再取自模型入参——修复前模型可向任意 userId/租户写入污染记忆。改为服务端投影：
  * {@code userId} ← {@link UserContext#currentOwner()}，{@code tenantId} ← {@link TenantContext}，
  * {@code sessionId} ← {@link AgentToolContext#sessionId()}。
+ *
+ * <p><b>迭代10（审批闭环可达）</b>：本工具是内置工具集中<b>唯一的写工具</b>，此前声明为
+ * {@code DRAFT}——运行时允许等级缺省 {@code EXECUTE} 时 {@code DRAFT < EXECUTE}，越限判定不成立，
+ * 网关直接放行；即使把节点 {@code autonomyLevel} 降到 {@code OBSERVE} 使其越限，由于
+ * {@code level != ESCALATE}，也只会落到「拒绝」而非「转审批」，审批链路因此<b>从未被触发</b>。
+ * 现声明为 {@code ESCALATE} 并显式 {@code requiresApproval = true}：
+ * {@code ESCALATE > EXECUTE} 且 {@code level == ESCALATE}，网关进入
+ * {@code PENDING_APPROVAL} 分支建单，经 {@code GovernanceController} 审批后由
+ * {@code HitlResumeService} 补执行并续跑 ReAct 循环，审批闭环真正可达。
  */
 @Component
-@ToolPolicy(level = AutonomyLevel.DRAFT, write = true, idempotent = true)
+@ToolPolicy(level = AutonomyLevel.ESCALATE, write = true, requiresApproval = true, idempotent = true)
 public class MemoryWriteTool implements AgentTool {
 
     /** 未声明租户时的兜底值，与 {@code TenantProjectionInterceptor.DEFAULT_TENANT} 对齐。 */
